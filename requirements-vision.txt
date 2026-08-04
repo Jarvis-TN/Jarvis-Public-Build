@@ -1,0 +1,6 @@
+# Isolated deps for the real-time gesture sidecar (vision_sidecar.py).
+# Installed into .venv-vision ONLY - kept out of the main .venv because
+# mediapipe pulls opencv-contrib-python, which clashes with the main env's
+# pinned opencv-python-headless. Build with setup_vision.bat.
+mediapipe>=0.10.9
+numpy<2.2

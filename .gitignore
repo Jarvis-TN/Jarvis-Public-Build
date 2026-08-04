@@ -1,0 +1,34 @@
+# --- secrets: NEVER commit or copy these off the machine ---
+config.json
+token.json
+credentials.json
+
+# --- virtual environments (rebuild with setup*.bat; never portable) ---
+.venv/
+.venv-chatterbox/
+.venv-vision/
+
+# --- per-machine + generated state ---
+memory/
+backups/
+shortcuts.json
+last_remote_url.txt
+*.tmp
+*.log
+
+# --- downloaded model weights (re-fetched on first run) ---
+voices/speaker/
+voices/piper/
+voices/face/
+voices/clone/
+
+# --- downloaded binaries (cloudflared etc.; re-fetched on first run) ---
+bin/
+
+# --- python / tooling caches ---
+__pycache__/
+*.pyc
+.claude/launch.json
+
+# keep the templates / committed assets
+!config.example.json

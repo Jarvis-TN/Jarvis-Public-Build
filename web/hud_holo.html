@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>J.A.R.V.I.S. — HUD (hologram)</title>
+<style>
+  html, body { margin:0; height:100%; background:#050403; overflow:hidden;
+               font-family:'Segoe UI', system-ui, sans-serif; color:#e8b45e; }
+  jarvis-hologram { position:fixed; inset:0; display:block; }
+
+  /* glass sphere rim + sheen (decorative, non-interactive) */
+  #glassrim { position:absolute; left:50%; top:50%; width:min(92vmin,100%); aspect-ratio:1;
+    transform:translate(-50%,-50%); border-radius:50%; pointer-events:none; z-index:2;
+    box-shadow: inset 0 0 90px rgba(255,170,60,.05), inset 0 2px 1px rgba(255,220,160,.10),
+      inset 0 -30px 80px rgba(0,0,0,.55), 0 0 120px rgba(255,150,40,.06);
+    border:1px solid rgba(255,190,110,.10); }
+  #glassrim > div { position:absolute; left:14%; top:4%; width:72%; height:34%; border-radius:50%;
+    background:radial-gradient(ellipse at 50% 0%, rgba(255,235,200,.055), rgba(255,235,200,0) 65%); }
+
+  /* JARVIS status label (top-left) */
+  #brand { position:fixed; top:24px; left:24px; z-index:10; display:flex; align-items:center; gap:10px;
+    pointer-events:none; }
+  #brand .dot { width:8px; height:8px; border-radius:50%; background:#ffb347;
+    box-shadow:0 0 10px #ffb347; animation:jpulse 2.4s ease-in-out infinite; }
+  @keyframes jpulse { 0%,100%{opacity:.55;} 50%{opacity:1;} }
+  #brand .txt { color:rgba(232,180,94,.85); font-size:12px; letter-spacing:.32em; text-transform:uppercase; }
+
+  /* frameless window drag + chrome (inert unless launched frameless) */
+  #dragregion { position:fixed; inset:0; z-index:1; pointer-events:none; }
+  body.frameless #dragregion { pointer-events:auto; }
+  #winchrome { position:fixed; top:14px; right:16px; z-index:40; display:none; gap:8px; }
+  #winchrome button { width:34px; height:34px; border-radius:50%; background:rgba(20,12,4,.5);
+    color:#ffb24d; border:1px solid rgba(255,178,77,.35); font-size:14px; line-height:1;
+    cursor:pointer; backdrop-filter:blur(6px); transition:background .15s; }
+  #winchrome button:hover { background:rgba(255,178,77,.22); }
+  #winClose:hover { background:rgba(255,90,70,.35); color:#fff; }
+  #resizeGrip { position:fixed; right:3px; bottom:3px; width:22px; height:22px; z-index:40;
+    cursor:nwse-resize; display:none; opacity:.55;
+    background:linear-gradient(135deg, transparent 55%, rgba(255,178,77,.75) 55%); }
+  #resizeGrip:hover { opacity:.9; }
+  body.frameless #winchrome, body.frameless #resizeGrip { display:flex; }
+
+  /* in-HUD controls: chat / mute / stop */
+  #hud-controls { position:fixed; right:16px; bottom:16px; z-index:30; display:flex; gap:8px; }
+  #hud-controls button { width:44px; height:44px; border-radius:50%; background:rgba(20,12,4,.5);
+    color:#ffb24d; border:1px solid rgba(255,178,77,.35); font-size:16px; cursor:pointer;
+    backdrop-filter:blur(6px); transition:background .15s; }
+  #hud-controls button:hover { background:rgba(255,178,77,.22); }
+  #hud-controls button.active { background:rgba(255,178,77,.32); color:#fff; }
+
+  #chatwrap { position:fixed; left:50%; transform:translateX(-50%); bottom:74px;
+    width:min(560px,86vw); z-index:30; display:none; flex-direction:column; gap:6px; }
+  #chatlog { max-height:38vh; overflow-y:auto; padding:10px 12px; border-radius:10px;
+    background:rgba(10,7,3,.6); border:1px solid rgba(255,178,77,.2);
+    font-size:13px; line-height:1.45; backdrop-filter:blur(6px); }
+  #chatlog div { margin:3px 0; }
+  #chatlog .you { color:#ffd9a0; } #chatlog .jarvis { color:#ffb24d; }
+  #chatlog .system { color:#8a7a60; font-style:italic; font-size:12px; }
+  #chatinput { display:flex; gap:6px; }
+  #chatbox { flex:1; background:rgba(10,7,3,.7); border:1px solid rgba(255,178,77,.35);
+    color:#fde9c8; border-radius:8px; padding:9px 12px; font:inherit; outline:none; }
+  #sendBtn { background:rgba(255,178,77,.18); color:#ffb24d; border:1px solid rgba(255,178,77,.4);
+    border-radius:8px; padding:0 14px; cursor:pointer; }
+
+  /* dev panel (state pills + amp + bridge indicator) — hidden in app mode (?app) */
+  #panel { position:fixed; left:18px; bottom:16px; z-index:10; display:flex; gap:8px; align-items:center; }
+  .jv-pill { height:28px; padding:0 14px; border-radius:14px; background:rgba(10,7,3,.55);
+    border:1px solid rgba(217,162,74,.35); color:rgba(232,180,94,.6); font-size:11px;
+    letter-spacing:.14em; text-transform:uppercase; cursor:pointer; font-family:inherit; }
+  .jv-pill.on { background:rgba(217,162,74,.22); border-color:#e8b45e; color:#ffd98a; }
+  #panel input { width:110px; accent-color:#ffb24d; vertical-align:middle; }
+  #bridge { font-size:11px; letter-spacing:.12em; color:rgba(232,180,94,.6); }
+</style>
+</head>
+<body>
+<div id="dragregion" class="pywebview-drag-region"></div>
+
+<jarvis-hologram id="holo" state="idle" density="1" speed="1" tint="#ffffff"></jarvis-hologram>
+<div id="glassrim"><div></div></div>
+
+<div id="brand"><div class="dot"></div><div class="txt">J.A.R.V.I.S — <span id="stateLabel">idle</span></div></div>
+
+<!-- frameless window controls (shown only when launched frameless) -->
+<div id="winchrome">
+  <button id="winMin" title="Minimize">—</button>
+  <button id="winClose" title="Close Jarvis">✕</button>
+</div>
+<div id="resizeGrip" title="Drag to resize"></div>
+
+<!-- in-HUD controls: chat / mute / stop -->
+<div id="hud-controls">
+  <button id="chatToggle" title="Chat">💬</button>
+  <button id="muteBtn" title="Mute / unmute mic">🎙</button>
+  <button id="stopBtn" title="Stop speaking">⏹</button>
+</div>
+<div id="chatwrap">
+  <div id="chatlog"></div>
+  <div id="chatinput">
+    <input id="chatbox" type="text" placeholder="Type to Jarvis…" autocomplete="off" />
+    <button id="sendBtn">Send</button>
+  </div>
+</div>
+
+<!-- dev panel: manual state + amp + bridge indicator (hidden under ?app) -->
+<div id="panel">
+  <button class="jv-pill on" data-state="idle">idle</button>
+  <button class="jv-pill" data-state="listening">listening</button>
+  <button class="jv-pill" data-state="speaking">speaking</button>
+  <button class="jv-pill" data-state="thinking">thinking</button>
+  <span> amp <input id="amp" type="range" min="0" max="1" step="0.01" value="0"></span>
+  <span id="bridge">○ local</span>
+</div>
+
+<script src="hologram.js"></script>
+<script>
+(function () {
+  'use strict';
+  const params    = new URLSearchParams(location.search);
+  const stateLabel= document.getElementById('stateLabel');
+  const pills     = [...document.querySelectorAll('#panel .jv-pill')];
+  const ampSlider = document.getElementById('amp');
+  const bridgeEl  = document.getElementById('bridge');
+  const muteBtn   = document.getElementById('muteBtn');
+  const chatlog   = document.getElementById('chatlog');
+  const chatwrap  = document.getElementById('chatwrap');
+  const chatbox   = document.getElementById('chatbox');
+
+  // The engine (hologram.js) publishes window.jarvis once the element upgrades.
+  // Guard every access so the page still runs if WebGL2 is unavailable.
+  const J = () => window.jarvis || null;
+
+  // Reflect state changes (the engine fires 'jarvis-state') into label + pills.
+  function reflect(s) {
+    if (stateLabel) stateLabel.textContent = s;
+    pills.forEach(p => p.classList.toggle('on', p.dataset.state === s));
+  }
+  window.addEventListener('jarvis-state', (e) => reflect(e.detail.state));
+  reflect('idle');
+
+  // Dev pills / amp slider — only visible when NOT ?app; drive the engine locally.
+  pills.forEach(p => p.addEventListener('click', () => { const j = J(); if (j && j.setState) j.setState(p.dataset.state); }));
+  if (ampSlider) ampSlider.addEventListener('input', () => { const j = J(); if (j && j.setLevel) j.setLevel(ampSlider.value); });
+  if (params.has('app')) document.getElementById('panel').style.display = 'none';
+
+  // ---- chat log ----
+  let jarvisLine = null;
+  function addChat(role, text) {
+    if (!chatlog) return;
+    if (role === 'jarvis_chunk') {
+      if (!text) return;
+      if (!jarvisLine) { jarvisLine = document.createElement('div'); jarvisLine.className = 'jarvis'; jarvisLine.textContent = 'Jarvis: ' + text; chatlog.appendChild(jarvisLine); }
+      else jarvisLine.textContent += ' ' + text;
+      chatlog.scrollTop = chatlog.scrollHeight; return;
+    }
+    if (role === 'jarvis_end') { jarvisLine = null; return; }
+    if (!text) return;
+    jarvisLine = null;
+    const div = document.createElement('div'); div.className = role;
+    const who = role === 'you' ? 'You' : role === 'jarvis' ? 'Jarvis' : '•';
+    div.textContent = who + ': ' + text; chatlog.appendChild(div);
+    chatlog.scrollTop = chatlog.scrollHeight;
+    while (chatlog.children.length > 100) chatlog.removeChild(chatlog.firstChild);
+  }
+
+  // ---- live bridge (ws://localhost:8765) — same protocol as hud_aou.html ----
+  const BRIDGE_URL = 'ws://localhost:8765';
+  let bridgeWS = null;
+  function bridgeLive(on) { if (!bridgeEl) return; bridgeEl.textContent = on ? '● live' : '○ local'; bridgeEl.style.color = on ? '#7CFFA0' : ''; }
+  function sendCmd(obj) { try { if (bridgeWS && bridgeWS.readyState === 1) bridgeWS.send(JSON.stringify(obj)); } catch (e) {} }
+
+  (function connectBridge() {
+    let ws;
+    try { ws = new WebSocket(BRIDGE_URL); } catch (e) { return setTimeout(connectBridge, 2000); }
+    ws.onopen = () => { bridgeWS = ws; bridgeLive(true); };
+    ws.onmessage = (ev) => {
+      try {
+        const d = JSON.parse(ev.data);
+        if (d.type === 'status') { if (bridgeEl) bridgeEl.title = d.text; }
+        else if (d.type === 'transcript') { addChat(d.role, d.text); }
+        else if (d.type === 'panel' || d.type === 'panel_clear'
+              || d.type === 'visual' || d.type === 'visual_clear') { /* shown by the Display window */ }
+        else {
+          const j = J();
+          if (j) {
+            if (d.state && j.setState) j.setState(d.state);
+            if (typeof d.level === 'number' && j.setLevel) j.setLevel(d.level);
+          }
+          if (muteBtn) muteBtn.classList.toggle('active', !!d.muted);
+        }
+        bridgeLive(true);
+      } catch (e) {}
+    };
+    ws.onclose = () => { bridgeWS = null; bridgeLive(false); const j = J(); if (j && j.setLevel) j.setLevel(null); setTimeout(connectBridge, 2000); };
+    ws.onerror = () => { try { ws.close(); } catch (e) {} };
+  })();
+
+  // ---- in-HUD controls -> engine commands over the bridge ----
+  muteBtn.onclick = () => sendCmd({ cmd: 'mute' });
+  document.getElementById('stopBtn').onclick = () => sendCmd({ cmd: 'stop' });
+  function sendChat() {
+    const t = chatbox.value.trim(); if (!t) return;
+    if (bridgeWS && bridgeWS.readyState === 1) sendCmd({ cmd: 'chat', text: t });
+    else addChat('you', t);
+    chatbox.value = '';
+  }
+  document.getElementById('sendBtn').onclick = sendChat;
+  chatbox.addEventListener('keydown', (e) => { if (e.key === 'Enter') sendChat(); });
+  document.getElementById('chatToggle').onclick = (e) => {
+    const open = chatwrap.style.display === 'flex';
+    chatwrap.style.display = open ? 'none' : 'flex';
+    e.currentTarget.classList.toggle('active', !open);
+    if (!open) chatbox.focus();
+  };
+
+  // ---- frameless window: drag + on-HUD minimize/close + corner resize (pywebview) ----
+  if (params.has('transparent')) {
+    document.documentElement.style.background = 'transparent';
+    document.body.style.background = 'transparent';
+  }
+  if (params.has('frameless')) {
+    document.body.classList.add('frameless');
+    const api = () => (window.pywebview && window.pywebview.api) || null;
+    const winMin = document.getElementById('winMin');
+    const winClose = document.getElementById('winClose');
+    if (winMin) winMin.onclick = () => { const a = api(); if (a && a.minimize) a.minimize(); };
+    if (winClose) winClose.onclick = () => { const a = api(); if (a && a.close_app) a.close_app(); };
+    const grip = document.getElementById('resizeGrip');
+    if (grip) {
+      let winW = window.innerWidth, winH = window.innerHeight;
+      let sizing = false, sx = 0, sy = 0, sw = 0, sh = 0, pending = 0;
+      window.addEventListener('resize', () => { winW = window.innerWidth; winH = window.innerHeight; });
+      grip.addEventListener('pointerdown', e => { sizing = true; sx = e.screenX; sy = e.screenY; sw = winW; sh = winH; try { grip.setPointerCapture(e.pointerId); } catch (_) {} e.preventDefault(); e.stopPropagation(); });
+      grip.addEventListener('pointermove', e => {
+        if (!sizing) return;
+        const w = Math.max(360, Math.round(sw + (e.screenX - sx)));
+        const h = Math.max(360, Math.round(sh + (e.screenY - sy)));
+        if (pending) return;
+        pending = requestAnimationFrame(() => { pending = 0; const a = api(); if (a && a.set_size) a.set_size(w, h); winW = w; winH = h; });
+      });
+      const end = e => { sizing = false; try { grip.releasePointerCapture(e.pointerId); } catch (_) {} };
+      grip.addEventListener('pointerup', end);
+      grip.addEventListener('pointercancel', end);
+    }
+  }
+})();
+</script>
+</body>
+</html>

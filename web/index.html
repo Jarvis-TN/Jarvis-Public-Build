@@ -1,0 +1,768 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>J.A.R.V.I.S. — Neural HUD</title>
+<style>
+  :root { --cyan:#ffb24d; }
+  html, body { margin:0; height:100%; background:#03060a; overflow:hidden;
+               font-family:"Consolas","SF Mono",monospace; color:var(--cyan); }
+  #app { position:fixed; inset:0; }
+  canvas { display:block; }
+
+  /* --- demo control panel (safe to delete; the JS API works without it) --- */
+  #panel { position:fixed; left:16px; bottom:16px; z-index:10;
+           background:rgba(6,12,20,.55); border:1px solid rgba(127,232,255,.25);
+           border-radius:10px; padding:12px 14px; backdrop-filter:blur(6px);
+           font-size:12px; letter-spacing:.04em; user-select:none; }
+  #panel .row { display:flex; gap:8px; align-items:center; margin:6px 0; }
+  #panel button { background:rgba(127,232,255,.08); color:var(--cyan);
+           border:1px solid rgba(127,232,255,.35); border-radius:6px;
+           padding:6px 12px; cursor:pointer; font:inherit; letter-spacing:.06em; }
+  #panel button.active { background:rgba(127,232,255,.28); color:#eafbff;
+           box-shadow:0 0 12px rgba(127,232,255,.4); }
+  #panel input[type=range] { width:140px; accent-color:var(--cyan); }
+  #panel label { opacity:.8; }
+  #title { position:fixed; top:16px; left:0; right:0; text-align:center; z-index:10;
+           font-size:13px; letter-spacing:.5em; opacity:.55; pointer-events:none; }
+  #title b { font-weight:600; }
+  #hint { opacity:.5; font-size:11px; margin-top:4px; }
+
+  /* --- in-HUD controls: chat / mute / stop --- */
+  #hud-controls { position:fixed; bottom:18px; left:50%; transform:translateX(-50%);
+    display:flex; gap:10px; z-index:30; }
+  #hud-controls button { width:48px; height:48px; border-radius:50%; cursor:pointer;
+    background:rgba(20,14,6,.55); color:var(--cyan); border:1px solid rgba(255,178,77,.4);
+    font-size:18px; backdrop-filter:blur(6px); transition:background .15s; }
+  #hud-controls button:hover { background:rgba(255,178,77,.18); }
+  #hud-controls button.active { background:rgba(255,178,77,.32); color:#fff;
+    box-shadow:0 0 14px rgba(255,178,77,.45); }
+  #chatwrap { position:fixed; left:50%; transform:translateX(-50%); bottom:80px;
+    width:min(560px,86vw); z-index:30; display:none; flex-direction:column; gap:6px; }
+  #chatlog { max-height:40vh; overflow-y:auto; padding:10px 12px; border-radius:10px;
+    background:rgba(6,10,16,.62); border:1px solid rgba(255,178,77,.2);
+    font-size:13px; line-height:1.45; backdrop-filter:blur(6px); }
+  #chatlog div { margin:3px 0; }
+  #chatlog .you { color:#ffd9a0; } #chatlog .jarvis { color:#ffb24d; }
+  #chatlog .system { color:#8a7a60; font-style:italic; font-size:12px; }
+  #chatinput { display:flex; gap:6px; }
+  #chatbox { flex:1; background:rgba(6,10,16,.72); border:1px solid rgba(255,178,77,.35);
+    color:#fde9c8; border-radius:8px; padding:9px 12px; font:inherit; outline:none; }
+  #sendBtn { background:rgba(255,178,77,.18); color:var(--cyan);
+    border:1px solid rgba(255,178,77,.4); border-radius:8px; padding:0 14px; cursor:pointer; }
+
+  /* --- settings panel --- */
+  #settings { position:fixed; top:16px; right:16px; z-index:40; display:none;
+    width:236px; max-height:82vh; overflow-y:auto; padding:12px 14px; border-radius:12px;
+    background:rgba(6,10,16,.82); border:1px solid rgba(255,178,77,.3);
+    backdrop-filter:blur(8px); font-size:12px; }
+  #settings .s-title { color:var(--cyan); font-weight:600; letter-spacing:.08em; margin-bottom:8px; }
+  #settings .s-row { display:block; margin:9px 0; }
+  #settings .s-top { display:flex; justify-content:space-between; opacity:.85; }
+  #settings .s-top b { color:var(--cyan); font-weight:600; }
+  #settings input[type=range] { width:100%; accent-color:var(--cyan); margin-top:3px; }
+  #settings .s-btns { display:flex; gap:8px; margin-top:12px; position:sticky; bottom:0; }
+  #settings .s-btns button { flex:1; background:rgba(255,178,77,.16); color:var(--cyan);
+    border:1px solid rgba(255,178,77,.4); border-radius:8px; padding:7px 0; cursor:pointer; }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div id="title"><b>J . A . R . V . I . S .</b></div>
+
+<div id="panel">
+  <div class="row">
+    <button data-state="idle" class="active">IDLE</button>
+    <button data-state="listening">LISTENING</button>
+    <button data-state="speaking">SPEAKING</button>
+  </div>
+  <div class="row">
+    <label>amp</label>
+    <input id="amp" type="range" min="0" max="1" step="0.01" value="0" />
+    <label><input id="sim" type="checkbox" checked /> sim</label>
+  </div>
+  <div class="row"><span id="fps" class="hint"></span>
+    <span id="bridge" class="hint" style="margin-left:auto">○ local</span></div>
+</div>
+
+<!-- In-HUD controls: chat / mute / stop -->
+<div id="hud-controls">
+  <button id="chatToggle" title="Chat">💬</button>
+  <button id="muteBtn" title="Mute / unmute mic">🔇</button>
+  <button id="stopBtn" title="Stop speaking">⏹</button>
+</div>
+<div id="chatwrap">
+  <div id="chatlog"></div>
+  <div id="chatinput">
+    <input id="chatbox" type="text" placeholder="Type to Jarvis…" autocomplete="off" />
+    <button id="sendBtn">Send</button>
+  </div>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+
+// ----------------------------------------------------------------------------
+//  Tunables
+// ----------------------------------------------------------------------------
+const NODE_COUNT   = 200;
+const MAX_SEGMENTS = 4200;
+const RADIUS       = 18;       // cloud radius
+const CONNECT_DIST = 6.9;      // base neighbour link distance
+// Gold "neural" palette echoing the films' holographic synapse sphere.
+const GOLD = new THREE.Color(1.00, 0.60, 0.12);   // amber filament
+const HOT  = new THREE.Color(1.00, 0.93, 0.78);   // white-hot firing core
+const DEEP = new THREE.Color(0.55, 0.22, 0.03);   // dim / broken filament
+
+// Per-state targets. `fire` is now neuron firings PER SECOND across the whole cloud
+// (each ignition hits one random node), so blinks are sparse and staggered.
+const STATES = {
+  idle:      { bright: 0.50, drift: 0.45, radius: 1.00, conn: 0.92, rot: 0.035, fire: 1 },
+  listening: { bright: 0.85, drift: 0.65, radius: 0.88, conn: 1.08, rot: 0.060, fire: 3 },
+  speaking:  { bright: 0.95, drift: 0.95, radius: 0.90, conn: 1.25, rot: 0.085, fire: 4 },
+};
+
+// ----------------------------------------------------------------------------
+//  Live, user-tunable parameters (the Settings sliders write these; saved to
+//  localStorage so they persist across launches).
+// ----------------------------------------------------------------------------
+const DEFAULTS = {
+  ringCount: 8,        // number of orbital bands
+  ringWidth: 1.0,      // band thickness multiplier
+  ringBroken: 0.55,    // fraction of bands that are broken/fragmented arcs
+  ringGlow: 1.0,       // band brightness multiplier
+  coreSize: 1.0,       // central sphere size multiplier
+  coreGlow: 1.0,       // central sphere brightness multiplier
+  linkDist: 6.9,       // filament connection distance (density)
+  lineGlow: 1.0,       // filament brightness multiplier
+  nodeGlow: 1.0,       // neuron brightness multiplier
+  fireRate: 1.0,       // neuron firing frequency multiplier
+  fireFade: 0.32,      // how long each firing flash lingers (seconds)
+  bloomStrength: 0.75, // glow intensity
+  bloomRadius: 0.5,    // glow spread
+  rotSpeed: 1.0,       // overall rotation speed multiplier
+};
+const P = Object.assign({}, DEFAULTS);
+try { Object.assign(P, JSON.parse(localStorage.getItem('jarvisHUD') || '{}')); } catch (e) {}
+
+// ----------------------------------------------------------------------------
+//  Renderer / scene / camera
+// ----------------------------------------------------------------------------
+const app = document.getElementById('app');
+const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setClearColor(0x03060a, 1);
+app.appendChild(renderer.domElement);
+
+const scene  = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.1, 1000);
+camera.position.set(0, 0, 47);
+
+const group = new THREE.Group();
+scene.add(group);
+
+// ----------------------------------------------------------------------------
+//  1) Node cloud (glowing particles)
+// ----------------------------------------------------------------------------
+const basePos = new Float32Array(NODE_COUNT * 3);   // resting positions
+const phase   = new Float32Array(NODE_COUNT * 3);   // per-axis noise phase
+const freq    = new Float32Array(NODE_COUNT * 3);   // per-axis noise frequency
+const coreR   = new Float32Array(NODE_COUNT);       // per-node brightness variance
+const positions = new Float32Array(NODE_COUNT * 3); // live positions
+const aSize   = new Float32Array(NODE_COUNT);
+const baseSize = new Float32Array(NODE_COUNT);
+const aBright = new Float32Array(NODE_COUNT);
+const fire    = new Float32Array(NODE_COUNT);       // neuron firing 0..1
+
+for (let i = 0; i < NODE_COUNT; i++) {
+  // fill a sphere volume, biased a little toward the shell for the "brain" look
+  const u = Math.random(), v = Math.random();
+  const theta = Math.acos(2 * u - 1), ph = 2 * Math.PI * v;
+  const r = RADIUS * (0.62 + 0.38 * Math.cbrt(Math.random()));
+  const x = r * Math.sin(theta) * Math.cos(ph);
+  const y = r * Math.sin(theta) * Math.sin(ph);
+  const z = r * Math.cos(theta);
+  basePos[i*3] = x; basePos[i*3+1] = y; basePos[i*3+2] = z;
+  for (let a = 0; a < 3; a++) {
+    phase[i*3+a] = Math.random() * Math.PI * 2;
+    freq[i*3+a]  = 0.15 + Math.random() * 0.35;
+  }
+  coreR[i]   = 0.6 + Math.random() * 0.4;
+  baseSize[i] = 1.7 + Math.random() * 2.3;
+  aSize[i]   = baseSize[i];
+  aBright[i] = 0.6;
+}
+
+const nodeGeo = new THREE.BufferGeometry();
+nodeGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+nodeGeo.setAttribute('aSize',    new THREE.BufferAttribute(aSize, 1));
+nodeGeo.setAttribute('aBright',  new THREE.BufferAttribute(aBright, 1));
+
+const nodeMat = new THREE.ShaderMaterial({
+  transparent: true,
+  depthWrite: false,
+  blending: THREE.AdditiveBlending,
+  uniforms: { uPixelRatio: { value: renderer.getPixelRatio() } },
+  vertexShader: `
+    attribute float aSize;
+    attribute float aBright;
+    varying float vBright;
+    uniform float uPixelRatio;
+    void main() {
+      vBright = aBright;
+      vec4 mv = modelViewMatrix * vec4(position, 1.0);
+      gl_PointSize = aSize * uPixelRatio * (90.0 / -mv.z);
+      gl_Position = projectionMatrix * mv;
+    }`,
+  fragmentShader: `
+    varying float vBright;
+    void main() {
+      vec2 uv = gl_PointCoord - 0.5;
+      float d = length(uv);
+      if (d > 0.5) discard;
+      float core = smoothstep(0.5, 0.0, d);
+      vec3 gold = vec3(1.0, 0.6, 0.12);
+      vec3 hot  = vec3(1.0, 0.95, 0.82);
+      vec3 col  = mix(gold, hot, pow(core, 1.6)) * vBright;
+      float a = core * core;
+      gl_FragColor = vec4(col * a, a);
+    }`,
+});
+const nodes = new THREE.Points(nodeGeo, nodeMat);
+nodes.frustumCulled = false;
+group.add(nodes);
+
+// ----------------------------------------------------------------------------
+//  2) Connections (distance-faded lines, rebuilt each frame)
+// ----------------------------------------------------------------------------
+const linePos = new Float32Array(MAX_SEGMENTS * 2 * 3);
+const lineCol = new Float32Array(MAX_SEGMENTS * 2 * 3);
+const lineGeo = new THREE.BufferGeometry();
+lineGeo.setAttribute('position', new THREE.BufferAttribute(linePos, 3).setUsage(THREE.DynamicDrawUsage));
+lineGeo.setAttribute('color',    new THREE.BufferAttribute(lineCol, 3).setUsage(THREE.DynamicDrawUsage));
+const lineMat = new THREE.LineBasicMaterial({
+  vertexColors: true, transparent: true, depthWrite: false,
+  blending: THREE.AdditiveBlending, opacity: 1.0,
+});
+const lines = new THREE.LineSegments(lineGeo, lineMat);
+lines.frustumCulled = false;
+group.add(lines);
+
+// ----------------------------------------------------------------------------
+//  2b) Orbital bands — flat ribbons of many fine arcs (some continuous, some
+//      broken), bundled across a width so they read thick + detailed, not as
+//      smooth tubes. This matches the film's drawn, fragmented gyro rings.
+// ----------------------------------------------------------------------------
+const rings = [];
+function makeBand(radius, width, count, broken) {
+  const band = new THREE.Group();
+  const mats = [];
+  for (let k = 0; k < count; k++) {
+    const r = radius + (count > 1 ? (k / (count - 1) - 0.5) * width : 0);
+    const start = broken ? Math.random() * Math.PI * 2 : 0;
+    const span = broken ? (0.25 + Math.random() * 0.45) * Math.PI * 2 : Math.PI * 2;
+    const n = Math.max(8, Math.round(220 * span / (Math.PI * 2)));
+    const pos = new Float32Array((n + 1) * 3);
+    for (let i = 0; i <= n; i++) {
+      const a = start + span * (i / n);
+      pos[i*3] = Math.cos(a) * r; pos[i*3+1] = Math.sin(a) * r; pos[i*3+2] = 0;
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    const m = new THREE.LineBasicMaterial({
+      color: new THREE.Color(1.0, 0.58, 0.13), transparent: true,
+      opacity: 0.35 + Math.random() * 0.25,
+      blending: THREE.AdditiveBlending, depthWrite: false,
+    });
+    band.add(new THREE.Line(g, m));
+    mats.push(m);
+  }
+  band.rotation.set(Math.random()*Math.PI, Math.random()*Math.PI, Math.random()*Math.PI);
+  band.userData.spin = [(Math.random()-0.5)*0.3, (Math.random()-0.5)*0.3, (Math.random()-0.5)*0.3];
+  band.userData.mats = mats;
+  band.userData.baseOp = mats.map(m => m.opacity);
+  group.add(band); rings.push(band);
+}
+// Build the bands from the live params (rebuilt when a ring slider changes).
+function buildBands() {
+  for (const b of rings) group.remove(b);
+  rings.length = 0;
+  const N = Math.max(1, Math.round(P.ringCount));
+  for (let i = 0; i < N; i++) {
+    const rf = 0.55 + 0.5 * (N > 1 ? i / (N - 1) : 0.9);   // spread 0.55 .. 1.05 x R
+    const width = RADIUS * 0.06 * P.ringWidth;
+    const count = Math.max(2, Math.round(width / (RADIUS * 0.012)));
+    const broken = Math.random() < P.ringBroken;
+    makeBand(RADIUS * rf, width, count, broken);
+  }
+}
+buildBands();
+
+// ----------------------------------------------------------------------------
+//  2e) Central core — a soft, semi-transparent glowing sphere (not a spiral)
+// ----------------------------------------------------------------------------
+const coreShell = new THREE.Mesh(
+  new THREE.SphereGeometry(RADIUS * 0.26, 32, 32),
+  new THREE.MeshBasicMaterial({ color: new THREE.Color(1.0, 0.55, 0.16),
+    transparent: true, opacity: 0.10, blending: THREE.AdditiveBlending, depthWrite: false }));
+const coreInner = new THREE.Mesh(
+  new THREE.SphereGeometry(RADIUS * 0.12, 24, 24),
+  new THREE.MeshBasicMaterial({ color: new THREE.Color(1.0, 0.86, 0.58),
+    transparent: true, opacity: 0.5, blending: THREE.AdditiveBlending, depthWrite: false }));
+const coreWire = new THREE.Mesh(
+  new THREE.SphereGeometry(RADIUS * 0.27, 20, 12),
+  new THREE.MeshBasicMaterial({ color: new THREE.Color(1.0, 0.62, 0.2), wireframe: true,
+    transparent: true, opacity: 0.10, blending: THREE.AdditiveBlending, depthWrite: false }));
+group.add(coreShell, coreInner, coreWire);
+
+// 2f) Outer shell — a faint sphere that reacts (brightens) when he speaks
+const outerShell = new THREE.Mesh(
+  new THREE.SphereGeometry(RADIUS * 1.0, 36, 24),
+  new THREE.MeshBasicMaterial({ color: new THREE.Color(1.0, 0.5, 0.12), wireframe: true,
+    transparent: true, opacity: 0.05, blending: THREE.AdditiveBlending, depthWrite: false }));
+group.add(outerShell);
+
+// ----------------------------------------------------------------------------
+//  2g) Radial spokes — bright filaments from the core out to the shell (the
+//      "wheel-spoke" / brain look). Inner vertex bright, outer vertex faded.
+// ----------------------------------------------------------------------------
+const SPOKES = 95;
+const spokePos = new Float32Array(SPOKES * 2 * 3);
+const spokeCol = new Float32Array(SPOKES * 2 * 3);
+for (let i = 0; i < SPOKES; i++) {
+  const u = Math.random(), v = Math.random();
+  const th = Math.acos(2*u - 1), ph = 2*Math.PI*v;
+  const dx = Math.sin(th)*Math.cos(ph), dy = Math.sin(th)*Math.sin(ph), dz = Math.cos(th);
+  const inner = RADIUS * 0.05, outer = RADIUS * (0.8 + 0.25*Math.random());
+  const o = i*6;
+  spokePos[o]=dx*inner; spokePos[o+1]=dy*inner; spokePos[o+2]=dz*inner;
+  spokePos[o+3]=dx*outer; spokePos[o+4]=dy*outer; spokePos[o+5]=dz*outer;
+}
+const spokeGeo = new THREE.BufferGeometry();
+spokeGeo.setAttribute('position', new THREE.BufferAttribute(spokePos, 3));
+spokeGeo.setAttribute('color', new THREE.BufferAttribute(spokeCol, 3).setUsage(THREE.DynamicDrawUsage));
+const spokes = new THREE.LineSegments(spokeGeo, new THREE.LineBasicMaterial({
+  vertexColors: true, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false }));
+spokes.frustumCulled = false;
+group.add(spokes);
+
+// 2h) Central hub — concentric small rings (the "wheel" at the very centre,
+//     kept facing the camera so it reads as a hub).
+function makeHubRing(r, op) {
+  const seg = 72, pts = [];
+  for (let i = 0; i <= seg; i++) { const a = i/seg*Math.PI*2; pts.push(new THREE.Vector3(Math.cos(a)*r, Math.sin(a)*r, 0)); }
+  const m = new THREE.LineBasicMaterial({ color: new THREE.Color(1.0, 0.8, 0.42),
+    transparent: true, opacity: op, blending: THREE.AdditiveBlending, depthWrite: false });
+  const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), m);
+  scene.add(line); return { line, mat: m };
+}
+const hub1 = makeHubRing(RADIUS * 0.07, 0.6);
+const hub2 = makeHubRing(RADIUS * 0.115, 0.45);
+
+// 2i) Outer edge — a crisp camera-facing ring at the sphere's silhouette.
+const edgePts = []; { const seg = 160, r = RADIUS * 1.02;
+  for (let i = 0; i <= seg; i++) { const a = i/seg*Math.PI*2; edgePts.push(new THREE.Vector3(Math.cos(a)*r, Math.sin(a)*r, 0)); } }
+const edgeMat = new THREE.LineBasicMaterial({ color: new THREE.Color(1.0, 0.6, 0.18),
+  transparent: true, opacity: 0.4, blending: THREE.AdditiveBlending, depthWrite: false });
+const edgeRing = new THREE.Line(new THREE.BufferGeometry().setFromPoints(edgePts), edgeMat);
+scene.add(edgeRing);   // not in `group` -> stays facing camera as the outer boundary
+
+// ----------------------------------------------------------------------------
+//  2c) Faint holographic circuitry — static rectilinear "traces" in the volume
+// ----------------------------------------------------------------------------
+(function buildCircuitry() {
+  const TRACES = 140, pos = [], col = [], cg = [1.0, 0.5, 0.12];
+  for (let n = 0; n < TRACES; n++) {
+    const u = Math.random(), v = Math.random();
+    const th = Math.acos(2*u - 1), ph = 2*Math.PI*v;
+    const rr = RADIUS * (0.15 + 0.7 * Math.random());
+    let x = rr*Math.sin(th)*Math.cos(ph), y = rr*Math.sin(th)*Math.sin(ph), z = rr*Math.cos(th);
+    const segs = 1 + (Math.random() < 0.5 ? 1 : 0);     // L-shaped circuit traces
+    for (let s = 0; s < segs; s++) {
+      const axis = (Math.random()*3) | 0, len = RADIUS * (0.05 + 0.2*Math.random());
+      let nx = x, ny = y, nz = z, dir = Math.random() < 0.5 ? -len : len;
+      if (axis === 0) nx += dir; else if (axis === 1) ny += dir; else nz += dir;
+      pos.push(x, y, z, nx, ny, nz); col.push(cg[0],cg[1],cg[2], cg[0],cg[1],cg[2]);
+      x = nx; y = ny; z = nz;
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(pos), 3));
+  g.setAttribute('color', new THREE.BufferAttribute(new Float32Array(col), 3));
+  group.add(new THREE.LineSegments(g, new THREE.LineBasicMaterial({
+    vertexColors: true, transparent: true, opacity: 0.13,
+    blending: THREE.AdditiveBlending, depthWrite: false })));
+})();
+
+// ----------------------------------------------------------------------------
+//  2d) Data "packets" — bright bits streaking from nodes inward to the core
+// ----------------------------------------------------------------------------
+const PACKET_COUNT = 75;
+const pkOrigin = new Float32Array(PACKET_COUNT * 3);
+const pkProg   = new Float32Array(PACKET_COUNT);
+const pkSpeed  = new Float32Array(PACKET_COUNT);
+const pkPos    = new Float32Array(PACKET_COUNT * 2 * 3);
+const pkCol    = new Float32Array(PACKET_COUNT * 2 * 3);
+function spawnPacket(p) {
+  const n = (Math.random() * NODE_COUNT) | 0;
+  pkOrigin[p*3] = basePos[n*3]; pkOrigin[p*3+1] = basePos[n*3+1]; pkOrigin[p*3+2] = basePos[n*3+2];
+  pkProg[p] = 0; pkSpeed[p] = 0.5 + Math.random() * 0.9;
+}
+for (let p = 0; p < PACKET_COUNT; p++) { spawnPacket(p); pkProg[p] = Math.random(); }
+const pkGeo = new THREE.BufferGeometry();
+pkGeo.setAttribute('position', new THREE.BufferAttribute(pkPos, 3).setUsage(THREE.DynamicDrawUsage));
+pkGeo.setAttribute('color',    new THREE.BufferAttribute(pkCol, 3).setUsage(THREE.DynamicDrawUsage));
+const packets = new THREE.LineSegments(pkGeo, new THREE.LineBasicMaterial({
+  vertexColors: true, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false }));
+packets.frustumCulled = false;
+group.add(packets);
+
+// ----------------------------------------------------------------------------
+//  4) Bloom post-processing
+// ----------------------------------------------------------------------------
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, camera));
+const bloom = new UnrealBloomPass(
+  new THREE.Vector2(window.innerWidth, window.innerHeight),
+  P.bloomStrength, P.bloomRadius, 0.2   // strength, radius, threshold
+);
+composer.addPass(bloom);
+composer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+
+// ----------------------------------------------------------------------------
+//  Demo control panel wiring (optional; the JS API works without it).
+//  Declared before the animation loop so the loop can reference these safely.
+// ----------------------------------------------------------------------------
+const buttons = [...document.querySelectorAll('#panel button')];
+const ampSlider = document.getElementById('amp');
+const simChk = document.getElementById('sim');
+const fpsEl = document.getElementById('fps');
+function syncButtons() {
+  buttons.forEach(b => b.classList.toggle('active', b.dataset.state === stateName));
+}
+
+// ----------------------------------------------------------------------------
+//  5) State machine + external API
+// ----------------------------------------------------------------------------
+let stateName = 'idle';
+let target = { ...STATES.idle };
+const cur = { ...STATES.idle };   // smoothed live params
+let extAmp = 0;                   // amplitude from external JS (0..1)
+let ampS = 0;                     // smoothed amplitude
+
+window.jarvisHUD = {
+  setState(s) {
+    if (!STATES[s]) return;
+    stateName = s;
+    target = { ...STATES[s] };
+    syncButtons();
+  },
+  setAmplitude(a) { extAmp = Math.max(0, Math.min(1, +a || 0)); },
+  getState() { return stateName; },
+};
+
+buttons.forEach(b => b.addEventListener('click', () => window.jarvisHUD.setState(b.dataset.state)));
+ampSlider.addEventListener('input', () => window.jarvisHUD.setAmplitude(ampSlider.value));
+syncButtons();
+
+// ----------------------------------------------------------------------------
+//  3) Animation loop: noise drift, rotation, link rebuild, state response
+// ----------------------------------------------------------------------------
+const clock = new THREE.Clock();
+const tmp = new THREE.Color();
+let fpsT = 0, fpsN = 0;
+
+function animate() {
+  requestAnimationFrame(animate);
+  const dt = Math.min(clock.getDelta(), 0.05);
+  const t  = clock.elapsedTime;
+
+  // smooth state params toward target
+  for (const k in cur) cur[k] += (target[k] - cur[k]) * Math.min(1, dt * 3.0);
+
+  // amplitude: external value, with an optional self-simulated envelope in the demo
+  let amp = extAmp;
+  if (simChk && simChk.checked && stateName === 'speaking') {
+    amp = 0.5 + 0.5 * Math.sin(t * 7.0) * Math.sin(t * 2.3) * Math.sin(t * 1.1);
+    amp = Math.abs(amp);
+  }
+  ampS += (amp - ampS) * Math.min(1, dt * 12.0);
+  const speaking = stateName === 'speaking';
+
+  // "tighten" inward + pulse brightness with amplitude while speaking
+  const radiusScale = cur.radius - (speaking ? ampS * 0.12 : 0);
+  const driftAmp = cur.drift * 1.8;
+  const nodeBright = cur.bright * (speaking ? (0.85 + 0.6 * ampS) : 1.0) * P.nodeGlow;
+
+  // --- neuron firing: each flash decays over ~0.18s; ignitions arrive at a rate
+  //     (per second) so individual neurons blink at random, staggered times ---
+  const decay = Math.exp(-dt / P.fireFade);
+  for (let i = 0; i < NODE_COUNT; i++) fire[i] *= decay;
+  const rate = (cur.fire + (speaking ? ampS * 16 : 0)) * P.fireRate;   // firings/sec
+  let expected = rate * dt;
+  let nIgnite = Math.floor(expected);
+  if (Math.random() < expected - nIgnite) nIgnite++;     // fractional remainder
+  for (let k = 0; k < nIgnite; k++) {
+    const n = (Math.random() * NODE_COUNT) | 0;
+    fire[n] = 1.0;
+  }
+
+  // update node positions, brightness and size (firing nodes flare brightly)
+  for (let i = 0; i < NODE_COUNT; i++) {
+    const ix = i*3;
+    const dx = Math.sin(t * freq[ix]   + phase[ix]);
+    const dy = Math.sin(t * freq[ix+1] + phase[ix+1]);
+    const dz = Math.sin(t * freq[ix+2] + phase[ix+2]);
+    positions[ix]   = basePos[ix]   * radiusScale + dx * driftAmp;
+    positions[ix+1] = basePos[ix+1] * radiusScale + dy * driftAmp;
+    positions[ix+2] = basePos[ix+2] * radiusScale + dz * driftAmp;
+    const fr = fire[i];
+    const tw = 0.8 + 0.2 * Math.sin(t * 2.0 + phase[ix]);
+    aBright[i] = nodeBright * coreR[i] * tw + fr * 1.6;
+    aSize[i]   = baseSize[i] * (1.0 + 1.4 * fr);
+  }
+  nodeGeo.attributes.position.needsUpdate = true;
+  nodeGeo.attributes.aBright.needsUpdate = true;
+  nodeGeo.attributes.aSize.needsUpdate = true;
+
+  // rebuild synapses: nearby pairs. Strong/close or firing links draw solid; weak/
+  // distant links draw as two short stubs with a central gap -> "broken" synapses.
+  const thr = P.linkDist * cur.conn + (speaking ? ampS * 1.4 : 0);
+  const thr2 = thr * thr;
+  const lineBright = (speaking ? 0.55 + 0.6 * ampS : cur.bright * 0.7) * P.lineGlow;
+  let seg = 0;
+  for (let i = 0; i < NODE_COUNT && seg < MAX_SEGMENTS - 2; i++) {
+    const ax = positions[i*3], ay = positions[i*3+1], az = positions[i*3+2];
+    const fi = fire[i];
+    for (let j = i + 1; j < NODE_COUNT && seg < MAX_SEGMENTS - 2; j++) {
+      const bx = positions[j*3], by = positions[j*3+1], bz = positions[j*3+2];
+      const ddx = ax - bx, ddy = ay - by, ddz = az - bz;
+      const d2 = ddx*ddx + ddy*ddy + ddz*ddz;
+      if (d2 > thr2) continue;
+      const d = Math.sqrt(d2);
+      // ripple: a firing neuron occasionally kindles a connected neighbour a beat
+      // later, so activation spreads across the web instead of blinking in isolation
+      if (fi > 0.6 && fire[j] < 0.25 && Math.random() < 0.010) fire[j] = 0.9;
+      else if (fire[j] > 0.6 && fi < 0.25 && Math.random() < 0.010) fire[i] = 0.9;
+      const fr = fi > fire[j] ? fi : fire[j];
+      const inten = (1 - d / thr) * lineBright + fr;   // firing brightens the synapse
+      if (inten <= 0.02) continue;
+      // dim amber -> bright gold -> white-hot when firing
+      tmp.copy(DEEP).lerp(GOLD, Math.min(1, inten * 1.3));
+      if (fr > 0.25) tmp.lerp(HOT, Math.min(1, (fr - 0.25) * 1.2));
+      tmp.multiplyScalar(Math.min(1.4, inten));
+      const r = tmp.r, g = tmp.g, b = tmp.b;
+      if (inten > 0.5 || fr > 0.35) {                  // solid synapse
+        const o = seg * 6;
+        linePos[o]=ax; linePos[o+1]=ay; linePos[o+2]=az;
+        linePos[o+3]=bx; linePos[o+4]=by; linePos[o+5]=bz;
+        lineCol[o]=r; lineCol[o+1]=g; lineCol[o+2]=b;
+        lineCol[o+3]=r; lineCol[o+4]=g; lineCol[o+5]=b;
+        seg++;
+      } else {                                         // broken: two fading stubs
+        const f = 0.30;
+        const o1 = seg * 6;
+        linePos[o1]=ax; linePos[o1+1]=ay; linePos[o1+2]=az;
+        linePos[o1+3]=ax-ddx*f; linePos[o1+4]=ay-ddy*f; linePos[o1+5]=az-ddz*f;
+        lineCol[o1]=r; lineCol[o1+1]=g; lineCol[o1+2]=b;
+        lineCol[o1+3]=r*0.2; lineCol[o1+4]=g*0.2; lineCol[o1+5]=b*0.2;
+        seg++;
+        const o2 = seg * 6;
+        linePos[o2]=bx; linePos[o2+1]=by; linePos[o2+2]=bz;
+        linePos[o2+3]=bx+ddx*f; linePos[o2+4]=by+ddy*f; linePos[o2+5]=bz+ddz*f;
+        lineCol[o2]=r; lineCol[o2+1]=g; lineCol[o2+2]=b;
+        lineCol[o2+3]=r*0.2; lineCol[o2+4]=g*0.2; lineCol[o2+5]=b*0.2;
+        seg++;
+      }
+    }
+  }
+  lineGeo.setDrawRange(0, seg * 2);
+  lineGeo.attributes.position.needsUpdate = true;
+  lineGeo.attributes.color.needsUpdate = true;
+
+  // data packets: streak from a node toward the core, accelerating, then respawn
+  const pkBoost = speaking ? (1.0 + 2.0 * ampS) : 0.6;
+  const pkBright = 0.6 + (speaking ? 0.9 * ampS : 0.25);
+  for (let p = 0; p < PACKET_COUNT; p++) {
+    pkProg[p] += pkSpeed[p] * pkBoost * dt;
+    if (pkProg[p] >= 1) spawnPacket(p);
+    const e = pkProg[p] * pkProg[p];                 // accelerate toward the core
+    const ox = pkOrigin[p*3], oy = pkOrigin[p*3+1], oz = pkOrigin[p*3+2];
+    const hf = 1 - e, tf = 1 - e + 0.06;             // head inner, tail just outward
+    const o = p * 6;
+    pkPos[o]   = ox*hf; pkPos[o+1] = oy*hf; pkPos[o+2] = oz*hf;
+    pkPos[o+3] = ox*tf; pkPos[o+4] = oy*tf; pkPos[o+5] = oz*tf;
+    pkCol[o]   = pkBright; pkCol[o+1] = pkBright*0.92; pkCol[o+2] = pkBright*0.7;   // hot head
+    pkCol[o+3] = pkBright*0.7; pkCol[o+4] = pkBright*0.35; pkCol[o+5] = pkBright*0.05; // gold tail
+  }
+  pkGeo.attributes.position.needsUpdate = true;
+  pkGeo.attributes.color.needsUpdate = true;
+
+  // orbital bands: each sweeps on its own axes; arcs brighten with state/voice
+  const ringGlow = (speaking ? 0.7 + 0.6 * ampS : cur.bright * 0.85) * P.ringGlow;
+  for (const rg of rings) {
+    rg.rotation.x += rg.userData.spin[0] * dt;
+    rg.rotation.y += rg.userData.spin[1] * dt;
+    rg.rotation.z += rg.userData.spin[2] * dt;
+    const mats = rg.userData.mats, base = rg.userData.baseOp;
+    for (let m = 0; m < mats.length; m++) mats[m].opacity = base[m] * ringGlow;
+  }
+
+  // central core sphere: soft glow that pulses with the voice
+  coreInner.material.opacity = (0.35 + (speaking ? 0.45 * ampS : 0.10 * cur.bright)) * P.coreGlow;
+  coreInner.scale.setScalar((1 + 0.18 * ampS) * P.coreSize);
+  coreShell.material.opacity = (0.09 + (speaking ? 0.16 * ampS : 0)) * P.coreGlow;
+  coreShell.scale.setScalar((1 + 0.10 * ampS) * P.coreSize);
+  coreWire.scale.setScalar(P.coreSize);
+  coreWire.rotation.y += 0.25 * dt;
+  coreWire.rotation.x += 0.12 * dt;
+  // outer shell reacts (brightens + flexes) when he speaks
+  outerShell.material.opacity = 0.045 + (speaking ? 0.18 * ampS : 0);
+  outerShell.scale.setScalar(1 + 0.03 * ampS);
+  outerShell.rotation.y -= 0.05 * dt;
+
+  // radial spokes: bright inner -> faded outer, with a gentle per-spoke flicker
+  const spokeBright = (speaking ? 0.7 + 0.6 * ampS : 0.5) * P.lineGlow;
+  for (let i = 0; i < SPOKES; i++) {
+    const o = i * 6;
+    const inn = spokeBright * (0.6 + 0.4 * Math.sin(t * 1.5 + i * 1.7));
+    spokeCol[o]   = inn;        spokeCol[o+1] = inn * 0.85; spokeCol[o+2] = inn * 0.5;
+    spokeCol[o+3] = inn * 0.45; spokeCol[o+4] = inn * 0.2;  spokeCol[o+5] = inn * 0.04;
+  }
+  spokeGeo.attributes.color.needsUpdate = true;
+
+  // central hub wheel (camera-facing): spins + brightens with the voice
+  const hubGlow = (speaking ? 0.6 + 0.5 * ampS : 0.5) * P.ringGlow;
+  hub1.line.rotation.z += 0.6 * dt; hub2.line.rotation.z -= 0.4 * dt;
+  hub1.mat.opacity = hubGlow; hub2.mat.opacity = hubGlow * 0.8;
+
+  // crisp outer edge ring
+  edgeMat.opacity = (speaking ? 0.45 + 0.4 * ampS : 0.4) * P.ringGlow;
+
+  // gentle overall rotation
+  group.rotation.y += cur.rot * dt * P.rotSpeed;
+  group.rotation.x = Math.sin(t * 0.08) * 0.18;
+
+  composer.render();
+
+  // fps readout
+  fpsN++; fpsT += dt;
+  if (fpsT >= 0.5 && fpsEl) { fpsEl.textContent = Math.round(fpsN / fpsT) + ' fps'; fpsN = 0; fpsT = 0; }
+}
+animate();
+
+// ----------------------------------------------------------------------------
+//  Resize
+// ----------------------------------------------------------------------------
+window.addEventListener('resize', () => {
+  const w = window.innerWidth, h = window.innerHeight;
+  camera.aspect = w / h; camera.updateProjectionMatrix();
+  renderer.setSize(w, h);
+  composer.setSize(w, h);
+  bloom.setSize(w, h);
+});
+
+// ----------------------------------------------------------------------------
+//  Live bridge: drive the HUD from the Python assistant over a WebSocket.
+//  It pushes {state, level} ~30/sec; if no server is running the demo panel
+//  still works and this just keeps retrying quietly.
+// ----------------------------------------------------------------------------
+const BRIDGE_URL = 'ws://localhost:8765';
+const bridgeEl = document.getElementById('bridge');
+function bridgeLive(on) {
+  if (!bridgeEl) return;
+  bridgeEl.textContent = on ? '● live' : '○ local';
+  bridgeEl.style.color = on ? '#7CFFA0' : '';
+}
+let bridgeWS = null;
+function sendCmd(obj) {
+  try { if (bridgeWS && bridgeWS.readyState === 1) bridgeWS.send(JSON.stringify(obj)); } catch (e) {}
+}
+(function connectBridge() {
+  let ws;
+  try { ws = new WebSocket(BRIDGE_URL); }
+  catch (e) { return setTimeout(connectBridge, 2000); }
+  ws.onopen = () => { bridgeWS = ws; bridgeLive(true); };
+  ws.onmessage = (ev) => {
+    try {
+      const d = JSON.parse(ev.data);
+      if (d.type === 'transcript') {
+        addChat(d.role, d.text);
+      } else if (d.type === 'status') {
+        if (bridgeEl) bridgeEl.title = d.text;
+      } else {                              // state update
+        if (d.state) window.jarvisHUD.setState(d.state);
+        if (typeof d.level === 'number') window.jarvisHUD.setAmplitude(d.level);
+        if (simChk) simChk.checked = false;
+        const mb = document.getElementById('muteBtn');
+        if (mb) mb.classList.toggle('active', !!d.muted);
+      }
+      bridgeLive(true);
+    } catch (e) {}
+  };
+  ws.onclose = () => { bridgeWS = null; bridgeLive(false); setTimeout(connectBridge, 2000); };
+  ws.onerror = () => { try { ws.close(); } catch (e) {} };
+})();
+
+// ---- in-HUD controls: chat / mute / stop ----
+const chatlog = document.getElementById('chatlog');
+const chatwrap = document.getElementById('chatwrap');
+const chatbox = document.getElementById('chatbox');
+function addChat(role, text) {
+  if (!chatlog) return;
+  const div = document.createElement('div');
+  div.className = role === 'you' ? 'you' : (role === 'jarvis' ? 'jarvis' : 'system');
+  const who = role === 'you' ? 'You' : (role === 'jarvis' ? 'Jarvis' : '•');
+  div.textContent = who + ': ' + text;
+  chatlog.appendChild(div);
+  chatlog.scrollTop = chatlog.scrollHeight;
+  while (chatlog.children.length > 100) chatlog.removeChild(chatlog.firstChild);
+}
+function sendChat() {
+  const t = chatbox.value.trim();
+  if (!t) return;
+  // When the bridge is live, the engine echoes the "you" line back over the
+  // bridge, so DON'T add it locally too (that caused the duplicate line).
+  // Offline (no engine) we add it locally so the demo still shows something.
+  const connected = bridgeWS && bridgeWS.readyState === 1;
+  if (connected) sendCmd({ cmd: 'chat', text: t });
+  else           addChat('you', t);
+  chatbox.value = '';
+}
+document.getElementById('chatToggle').onclick = (e) => {
+  const open = chatwrap.style.display === 'flex';
+  chatwrap.style.display = open ? 'none' : 'flex';
+  e.currentTarget.classList.toggle('active', !open);
+  if (!open) chatbox.focus();
+};
+document.getElementById('muteBtn').onclick = () => sendCmd({ cmd: 'mute' });
+document.getElementById('stopBtn').onclick = () => sendCmd({ cmd: 'stop' });
+document.getElementById('sendBtn').onclick = sendChat;
+chatbox.addEventListener('keydown', (e) => { if (e.key === 'Enter') sendChat(); });
+
+// Settings panel removed (locked). Your tuned values still load automatically
+// from localStorage on top of the defaults in `P`, so the saved look persists.
+
+// When embedded as the desktop app (?app=1), hide the demo state panel + dim title.
+// (The chat/mute/stop controls stay - they're the real controls.)
+if (new URLSearchParams(location.search).has('app')) {
+  const pnl = document.getElementById('panel'); if (pnl) pnl.style.display = 'none';
+  const ttl = document.getElementById('title'); if (ttl) ttl.style.opacity = '0.3';
+}
+</script>
+</body>
+</html>

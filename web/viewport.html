@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>J.A.R.V.I.S. — Visual Viewport</title>
+<style>
+  html, body { margin:0; height:100%; background:#03060a; overflow:hidden;
+               font-family:"Consolas",monospace; color:#ffb24d; }
+  /* a thin glass frame to match the HUD, with the visual filling the rest */
+  #frame { position:fixed; inset:14px; border:1px solid rgba(255,178,77,.28);
+    border-radius:16px; background:rgba(10,7,3,.45); backdrop-filter:blur(6px);
+    box-shadow:0 0 40px rgba(255,178,77,.06), inset 0 0 60px rgba(0,0,0,.5);
+    display:flex; flex-direction:column; overflow:hidden; }
+  #titlebar { flex:0 0 auto; display:flex; align-items:center; gap:10px;
+    padding:12px 18px; border-bottom:1px solid rgba(255,178,77,.18);
+    text-transform:uppercase; letter-spacing:1.5px; font-size:13px; color:#ffb24d; }
+  #titlebar .dot { width:8px; height:8px; border-radius:50%; background:#ff9a3c;
+    box-shadow:0 0 10px #ff9a3c; animation:pulse 2.6s ease-in-out infinite; }
+  @keyframes pulse { 0%,100%{opacity:.5;} 50%{opacity:1;} }
+  #title { flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  #link { font-size:10px; opacity:.4; }
+  #stage { flex:1; display:flex; align-items:center; justify-content:center;
+    padding:18px; min-height:0; }
+  #stage svg, #stage img { max-width:100%; max-height:100%; height:auto; width:auto;
+    filter:drop-shadow(0 0 14px rgba(255,178,77,.12)); animation:fadein .4s ease; }
+  @keyframes fadein { from{opacity:0; transform:scale(.98);} to{opacity:1; transform:none;} }
+  #idle { text-align:center; opacity:.32; font-size:13px; line-height:1.8; letter-spacing:1px; }
+  #idle .big { font-size:34px; opacity:.5; }
+</style>
+</head>
+<body>
+<div id="frame">
+  <div id="titlebar">
+    <span class="dot"></span>
+    <span id="title">Visual Viewport</span>
+    <span id="link">○ standby</span>
+  </div>
+  <div id="stage">
+    <div id="idle"><div class="big">◇</div>Awaiting a visual from Jarvis</div>
+  </div>
+</div>
+
+<script>
+const stage = document.getElementById('stage');
+const titleEl = document.getElementById('title');
+const linkEl = document.getElementById('link');
+
+function sanitizeSvg(svg){
+  // defensive: strip scripts / event handlers before injecting model-authored SVG
+  return String(svg || '')
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/\son\w+\s*=\s*"[^"]*"/gi, '')
+    .replace(/\son\w+\s*=\s*'[^']*'/gi, '');
+}
+
+function showVisual(title, svg){
+  titleEl.textContent = title || 'Visual';
+  const clean = sanitizeSvg(svg);
+  if (clean.trim().slice(0, 4).toLowerCase() === '<svg'){
+    stage.innerHTML = clean;
+  } else {
+    // not SVG markup -> treat as an image URL / data URI
+    stage.innerHTML = '';
+    const img = document.createElement('img');
+    img.src = svg;
+    stage.appendChild(img);
+  }
+}
+
+function clearVisual(){
+  titleEl.textContent = 'Visual Viewport';
+  stage.innerHTML = '<div id="idle"><div class="big">◇</div>Awaiting a visual from Jarvis</div>';
+}
+
+// ---- live bridge (same socket as the main HUD; we only act on visual events) ----
+const BRIDGE_URL = 'ws://localhost:8765';
+(function connect(){
+  let ws;
+  try { ws = new WebSocket(BRIDGE_URL); }
+  catch (e) { return setTimeout(connect, 2000); }
+  ws.onopen = () => { linkEl.textContent = '● live'; linkEl.style.color = '#7CFFA0'; };
+  ws.onmessage = (ev) => {
+    try {
+      const d = JSON.parse(ev.data);
+      if (d.type === 'visual') showVisual(d.title, d.svg);
+      else if (d.type === 'visual_clear') clearVisual();
+    } catch (e) {}
+  };
+  ws.onclose = () => { linkEl.textContent = '○ standby'; linkEl.style.color = ''; setTimeout(connect, 2000); };
+  ws.onerror = () => { try { ws.close(); } catch (e) {} };
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,528 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>J.A.R.V.I.S. — HUD TUNER</title>
+<style>
+  html,body{ margin:0; height:100%; background:#000; overflow:hidden; font-family:"Consolas",monospace; color:#ffb24d; }
+  #app{ position:fixed; inset:0; }
+  canvas{ display:block; }
+  /* state row bottom-left */
+  #state{ position:fixed; left:14px; bottom:14px; z-index:20; font-size:12px;
+    background:rgba(8,6,3,.5); border:1px solid rgba(255,178,77,.25); border-radius:8px; padding:8px 10px; backdrop-filter:blur(5px); }
+  #state button{ background:rgba(255,178,77,.1); color:#ffb24d; border:1px solid rgba(255,178,77,.35);
+    border-radius:5px; padding:5px 9px; cursor:pointer; font:inherit; margin-right:4px; }
+  #state button.active{ background:rgba(255,178,77,.3); color:#fff; }
+  #state input{ width:120px; vertical-align:middle; accent-color:#ffb24d; }
+  #fps{ opacity:.55; margin-left:6px; }
+  /* tuning panel right side */
+  #tune{ position:fixed; top:10px; right:10px; bottom:10px; width:290px; z-index:30;
+    background:rgba(8,6,3,.72); border:1px solid rgba(255,178,77,.28); border-radius:10px;
+    backdrop-filter:blur(9px); padding:10px 12px; overflow-y:auto; font-size:12px; }
+  #tune h1{ font-size:13px; letter-spacing:2px; margin:2px 0 8px; opacity:.85; }
+  #tune .grp{ margin:9px 0 4px; font-size:11px; letter-spacing:1.5px; color:#ffce92;
+    border-bottom:1px solid rgba(255,178,77,.18); padding-bottom:3px; text-transform:uppercase; }
+  #tune .row{ display:flex; align-items:center; gap:6px; margin:5px 0; }
+  #tune .row label{ flex:0 0 92px; opacity:.8; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #tune .row input[type=range]{ flex:1; accent-color:#ffb24d; }
+  #tune .row .v{ flex:0 0 40px; text-align:right; color:#ffe2bf; font-variant-numeric:tabular-nums; }
+  #tune .btns{ display:flex; gap:6px; margin:10px 0 4px; }
+  #tune .btns button{ flex:1; background:rgba(255,178,77,.14); color:#ffb24d;
+    border:1px solid rgba(255,178,77,.4); border-radius:6px; padding:6px; cursor:pointer; font:inherit; }
+  #tune .btns button:hover{ background:rgba(255,178,77,.3); color:#fff; }
+  #tune textarea{ width:100%; height:64px; margin-top:6px; background:rgba(0,0,0,.4);
+    color:#ffdcb4; border:1px solid rgba(255,178,77,.25); border-radius:6px; font:11px monospace; box-sizing:border-box; }
+  #tune .hint{ opacity:.5; font-size:10px; margin-top:6px; line-height:1.4; }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div id="state">
+  <button data-state="idle" class="active">IDLE</button>
+  <button data-state="listening">LISTENING</button>
+  <button data-state="speaking">SPEAKING</button>
+  <span> amp <input id="amp" type="range" min="0" max="1" step="0.01" value="0"></span>
+  <span id="fps"></span>
+</div>
+<div id="tune"></div>
+
+<script type="importmap">
+{ "imports": { "three": "./vendor/three/three.module.js", "three/addons/": "./vendor/three/jsm/" }}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
+
+const R = 18;
+const app = document.getElementById('app');
+const renderer = new THREE.WebGLRenderer({ antialias:true, powerPreference:'high-performance' });
+const PIXR = Math.min(devicePixelRatio||1, 1.5);
+renderer.setPixelRatio(PIXR);
+renderer.setSize(innerWidth, innerHeight);
+renderer.setClearColor(0x010204, 1);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.1;
+app.appendChild(renderer.domElement);
+let glLost = false;
+renderer.domElement.addEventListener('webglcontextlost', e => { e.preventDefault(); glLost = true; }, false);
+renderer.domElement.addEventListener('webglcontextrestored', () => { glLost = false; }, false);
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(50, innerWidth/innerHeight, 0.1, 1000);
+camera.position.set(0, 0, 50);
+const world = new THREE.Group(); scene.add(world);
+
+// ---- palette ----
+const C_DEEP = new THREE.Color(0.52, 0.20, 0.012);
+const C_AMBER = new THREE.Color(0.95, 0.50, 0.06);
+const C_GOLD = new THREE.Color(1.00, 0.74, 0.22);
+const C_HOT  = new THREE.Color(1.00, 0.92, 0.64);
+
+// ============================ TUNABLE PARAMS ============================
+const DEFAULTS = {
+  // brightness / motion
+  idleEnergy:0.26, speakGain:0.85, flicker:0.12, bloomBase:0.20, bloomGain:0.62,
+  breathe:0.011, rotSpeed:1.0,
+  // neurons (thoughts)
+  neuronCount:120, nodeSize:2.2, nodeDrift:0.5,
+  fireIdle:0.7, fireSpeak:2.0, fireAmp:6, fireDecay:0.45, ripple:0.35,
+  // arcs (electronic connections)
+  arcCount:150, arcOpacity:0.55, arcBright:0.6, arcCurve:0.6, arcFrag:0.45, rewire:0.25,
+  // packets (bits/thoughts firing across)
+  packetBase:5, packetSpeed:0.6, packetBright:1.3, packetsPerThought:1.4,
+  // core
+  coreBase:0.10, coreGain:0.65, coreSwirl:0.22, coreVein:0.5, coreSize:1.7,
+  // post
+  aberration:0.006, vignette:1.0, grain:0.022,
+};
+let P = Object.assign({}, DEFAULTS);
+try { Object.assign(P, JSON.parse(localStorage.getItem('jarvisHUDtune') || '{}')); } catch(e){}
+
+// ---- state interface ----
+let stateName = 'idle', extAmp = 0, ampS = 0;
+window.jarvisHUD = { setState(s){ stateName=s; syncStateButtons(); }, setAmplitude(a){ extAmp=Math.max(0,Math.min(1,+a||0)); }, getState(){ return stateName; } };
+
+const rand = (a,b)=>a+Math.random()*(b-a);
+const randn = ()=> (Math.random()+Math.random()+Math.random()-1.5)*0.8;
+const fract = x => x - Math.floor(x);
+
+// ---- composer (default targets; no custom MSAA RT — that caused edge flicker) ----
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, camera));
+const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.6, 0.40, 0.10);
+composer.addPass(bloom);
+composer.addPass(new OutputPass());
+const finishPass = new ShaderPass({
+  uniforms:{ tDiffuse:{value:null}, uTime:{value:0}, uAmp:{value:0},
+             uAberr:{value:0.006}, uVignette:{value:1.0}, uGrain:{value:0.022},
+             uRes:{value:new THREE.Vector2(innerWidth, innerHeight)} },
+  vertexShader:`varying vec2 vUv; void main(){ vUv=uv; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0); }`,
+  fragmentShader:`precision highp float; uniform sampler2D tDiffuse; uniform float uTime,uAmp,uAberr,uVignette,uGrain; uniform vec2 uRes; varying vec2 vUv;
+    void main(){ vec2 d=vUv-0.5; float r2=dot(d,d);
+      vec2 off=d*r2*(uAberr+uAmp*uAberr*0.7);
+      vec3 col=vec3(texture2D(tDiffuse,vUv+off).r, texture2D(tDiffuse,vUv).g, texture2D(tDiffuse,vUv-off).b);
+      col*=mix(1.0, smoothstep(1.25,0.30,r2*2.0), uVignette);
+      float g=fract(sin(dot(vUv*uRes+uTime*60.0, vec2(12.9898,78.233)))*43758.5453);
+      col+=(g-0.5)*uGrain; gl_FragColor=vec4(col,1.0); }`,
+});
+composer.addPass(finishPass);
+composer.setPixelRatio(PIXR);
+
+const FIT_R = R*1.18;
+const cloudMats = [];
+function fitCamera(){
+  camera.aspect = innerWidth/innerHeight;
+  const halfV = THREE.MathUtils.degToRad(camera.fov)/2;
+  const halfH = Math.atan(Math.tan(halfV)*camera.aspect);
+  camera.position.z = FIT_R/Math.sin(Math.min(halfV, halfH));
+  camera.updateProjectionMatrix();
+  const vh = renderer.domElement.height || innerHeight*PIXR;
+  for (const m of cloudMats){ if(m.uniforms.uCamZ) m.uniforms.uCamZ.value=camera.position.z; if(m.uniforms.uViewH) m.uniforms.uViewH.value=vh; }
+}
+
+// ============================ CLOUD (gold specks) ============================
+const pointVert = `
+  attribute float aSize; attribute float aMix; attribute float aPhase; attribute float aSpeed;
+  uniform float uTime,uAmp,uCamZ,uR,uViewH; varying float vMix,vTw,vDepth;
+  void main(){ vec4 mv=modelViewMatrix*vec4(position,1.0);
+    float tw=0.5+0.5*sin(uTime*aSpeed+aPhase); tw=tw*tw; vTw=tw; vMix=aMix;
+    vDepth=clamp((-mv.z-(uCamZ-uR))/(2.0*uR),0.0,1.0);
+    float size=aSize*(0.78+0.5*tw)*(1.0+uAmp*0.45);
+    gl_PointSize=size*(uViewH*0.00108)*(300.0/-mv.z);
+    gl_Position=projectionMatrix*mv; }`;
+const pointFrag = `
+  precision mediump float; uniform vec3 uDeep,uAmber,uGold,uHot; uniform float uBright,uHeat;
+  varying float vMix,vTw,vDepth;
+  void main(){ vec2 d=gl_PointCoord-0.5; float r2=dot(d,d); if(r2>0.25) discard;
+    float fall=exp(-r2*11.0);
+    vec3 col=vMix<0.5?mix(uDeep,uAmber,vMix*2.0):mix(uAmber,uGold,(vMix-0.5)*2.0);
+    col=mix(col,uHot,pow(vTw,3.0)*uHeat*0.85);
+    float a=fall*(0.38+0.62*vTw)*uBright; a*=1.0-vDepth*0.78;
+    gl_FragColor=vec4(col*a,a); }`;
+function makeCloudMaterial(){
+  return new THREE.ShaderMaterial({
+    uniforms:{ uTime:{value:0}, uAmp:{value:0}, uBright:{value:0.9}, uHeat:{value:0.7},
+      uCamZ:{value:50}, uR:{value:R}, uViewH:{value:innerHeight*PIXR},
+      uDeep:{value:C_DEEP}, uAmber:{value:C_AMBER}, uGold:{value:C_GOLD}, uHot:{value:C_HOT} },
+    vertexShader:pointVert, fragmentShader:pointFrag,
+    transparent:true, depthWrite:false, blending:THREE.AdditiveBlending });
+}
+const bands = [];
+const BANDDEFS = [
+  [1.02, 0.10, 0.050, 4200, 0.060], [0.94,-0.42,0.060,3800,-0.045],
+  [0.86, 0.78, 0.055, 3400, 0.085], [0.76,-1.05,0.070,3000,-0.070],
+  [0.66, 0.32, 0.080, 2600, 0.110], [0.55, 1.32,0.085,2200,-0.095],
+  [0.42,-0.65, 0.110, 1800, 0.140],
+];
+for (const [rx,tilt,thick,n,speed] of BANDDEFS){
+  const rad=R*rx, pos=new Float32Array(n*3), size=new Float32Array(n), mixA=new Float32Array(n), phase=new Float32Array(n), spd=new Float32Array(n);
+  const nClus=Math.round(rand(9,14)), clus=[];
+  for(let c=0;c<nClus;c++) clus.push({th:Math.random()*Math.PI*2, span:rand(0.10,0.42), lift:randn()*thick*R*2.2});
+  for(let i=0;i<n;i++){
+    let th,up,rr,inC=Math.random()<0.8;
+    if(inC){ const c=clus[(Math.random()*nClus)|0]; th=c.th+randn()*c.span; up=c.lift+randn()*thick*R*1.3; rr=rad*(1+randn()*thick*0.9); }
+    else { th=Math.random()*Math.PI*2; up=randn()*thick*R*3.2; rr=rad*(1+randn()*thick*1.6); }
+    pos[i*3]=Math.cos(th)*rr; pos[i*3+1]=up; pos[i*3+2]=Math.sin(th)*rr;
+    size[i]=inC?rand(0.9,2.3):rand(0.6,1.4);
+    mixA[i]=Math.min(1,Math.max(0,rand(0.15,0.95)+(inC?0.1:-0.15)));
+    phase[i]=Math.random()*Math.PI*2; spd[i]=rand(0.6,2.6);
+  }
+  const geo=new THREE.BufferGeometry();
+  geo.setAttribute('position',new THREE.BufferAttribute(pos,3));
+  geo.setAttribute('aSize',new THREE.BufferAttribute(size,1));
+  geo.setAttribute('aMix',new THREE.BufferAttribute(mixA,1));
+  geo.setAttribute('aPhase',new THREE.BufferAttribute(phase,1));
+  geo.setAttribute('aSpeed',new THREE.BufferAttribute(spd,1));
+  const mat=makeCloudMaterial(); cloudMats.push(mat);
+  const pivot=new THREE.Group(); pivot.rotation.x=tilt; pivot.rotation.z=rand(-0.15,0.15);
+  const pts=new THREE.Points(geo,mat); pivot.add(pts); world.add(pivot);
+  bands.push({pivot, pts, speed});
+}
+// inner nebula
+{
+  const n=6000, pos=new Float32Array(n*3), size=new Float32Array(n), mixA=new Float32Array(n), phase=new Float32Array(n), spd=new Float32Array(n);
+  for(let i=0;i<n;i++){ const u=Math.random(),v=Math.random(),th=u*Math.PI*2,ph=Math.acos(2*v-1),rr=R*Math.pow(Math.random(),0.55)*0.92;
+    pos[i*3]=Math.sin(ph)*Math.cos(th)*rr; pos[i*3+1]=Math.cos(ph)*rr*0.92; pos[i*3+2]=Math.sin(ph)*Math.sin(th)*rr;
+    size[i]=rand(0.5,1.3); mixA[i]=rand(0.05,0.55); phase[i]=Math.random()*Math.PI*2; spd[i]=rand(0.4,1.6); }
+  const geo=new THREE.BufferGeometry();
+  geo.setAttribute('position',new THREE.BufferAttribute(pos,3));
+  geo.setAttribute('aSize',new THREE.BufferAttribute(size,1));
+  geo.setAttribute('aMix',new THREE.BufferAttribute(mixA,1));
+  geo.setAttribute('aPhase',new THREE.BufferAttribute(phase,1));
+  geo.setAttribute('aSpeed',new THREE.BufferAttribute(spd,1));
+  const mat=makeCloudMaterial(); mat.uniforms.uBright.value=0.42; cloudMats.push(mat);
+  const pivot=new THREE.Group(); pivot.add(new THREE.Points(geo,mat)); world.add(pivot);
+  bands.push({pivot, pts:pivot.children[0], speed:0.03, nebula:true});
+}
+
+// ============================ NEURAL FIELD ============================
+// Drifting neurons; fragmented "electronic" arcs of varied length that rewire
+// between nodes; slow thought-firings; packets that fire across an arc per thought.
+const MAXNODES = 200, MAXARCS = 260, KSEG = 8, MAXPK = 140;
+const nodes = [];
+for (let i=0;i<MAXNODES;i++){
+  const u=Math.random(),v=Math.random(),th=u*Math.PI*2,ph=Math.acos(2*v-1),rr=R*(0.54+0.44*Math.cbrt(Math.random()));
+  nodes.push({ base:new THREE.Vector3(Math.sin(ph)*Math.cos(th)*rr, Math.cos(ph)*rr*0.94, Math.sin(ph)*Math.sin(th)*rr),
+    pos:new THREE.Vector3(), axis:new THREE.Vector3(randn(),randn(),randn()).normalize(),
+    w:rand(0.3,1.0)*(Math.random()<0.5?-1:1), ang:Math.random()*6.28, bph:Math.random()*6.28, bamp:rand(0.4,1.4),
+    fire:0, size:rand(0.7,1.6) });
+  nodes[i].pos.copy(nodes[i].base);
+}
+const nodePos=new Float32Array(MAXNODES*3), nodeSize=new Float32Array(MAXNODES), nodeFire=new Float32Array(MAXNODES);
+for(let i=0;i<MAXNODES;i++){ nodeSize[i]=nodes[i].size; nodePos[i*3]=nodes[i].pos.x; nodePos[i*3+1]=nodes[i].pos.y; nodePos[i*3+2]=nodes[i].pos.z; }
+const nGeo=new THREE.BufferGeometry();
+nGeo.setAttribute('position',new THREE.BufferAttribute(nodePos,3));
+nGeo.setAttribute('aSize',new THREE.BufferAttribute(nodeSize,1));
+nGeo.setAttribute('aFire',new THREE.BufferAttribute(nodeFire,1));
+nGeo.setDrawRange(0,P.neuronCount);
+const neuronMat=new THREE.ShaderMaterial({
+  uniforms:{ uViewH:{value:innerHeight*PIXR}, uCamZ:{value:50}, uR:{value:R}, uSize:{value:1},
+    uAmber:{value:C_AMBER}, uGold:{value:C_GOLD}, uHot:{value:C_HOT} },
+  vertexShader:`attribute float aSize,aFire; uniform float uViewH,uCamZ,uR,uSize; varying float vF,vDepth;
+    void main(){ vF=aFire; vec4 mv=modelViewMatrix*vec4(position,1.0);
+      vDepth=clamp((-mv.z-(uCamZ-uR))/(2.0*uR),0.0,1.0);
+      float size=aSize*uSize*(0.6+2.0*aFire);
+      gl_PointSize=size*(uViewH*0.00108)*(300.0/-mv.z); gl_Position=projectionMatrix*mv; }`,
+  fragmentShader:`precision mediump float; uniform vec3 uAmber,uGold,uHot; varying float vF,vDepth;
+    void main(){ vec2 d=gl_PointCoord-0.5; float r2=dot(d,d); if(r2>0.25) discard;
+      float fall=exp(-r2*10.0); vec3 col=mix(uAmber,uGold,0.45+0.55*vF); col=mix(col,uHot,vF*vF);
+      float a=fall*(0.06+0.94*vF); a*=1.0-vDepth*0.72; gl_FragColor=vec4(col*a,a); }`,
+  transparent:true, depthWrite:false, blending:THREE.AdditiveBlending });
+world.add(new THREE.Points(nGeo, neuronMat));
+
+const arcs = [];
+function chooseB(a, kind){
+  if (kind===0) return (Math.random()*P.neuronCount)|0;
+  let best=a, bd=1e9;
+  for(let s=0;s<8;s++){ const j=(Math.random()*P.neuronCount)|0; if(j===a) continue;
+    const d=nodes[a].base.distanceToSquared(nodes[j].base); if(d<bd){bd=d;best=j;} }
+  return best;
+}
+function spawnArc(o){
+  o=o||{}; o.a=(Math.random()*P.neuronCount)|0;
+  const roll=Math.random(); o.kind = roll<0.30?2 : roll<0.65?1 : 0;   // 2=bit 1=short 0=long
+  o.b=chooseB(o.a,o.kind);
+  o.frac = o.kind===2 ? rand(0.12,0.30) : o.kind===1 ? rand(0.45,0.8) : 1.0;
+  o.maxlife=rand(2.0,8.0); o.life=o.maxlife; o.bow=rand(-1,1);
+  o.perp=new THREE.Vector3(randn(),randn(),randn()).normalize(); o.seed=(Math.random()*1000)|0;
+  return o;
+}
+for(let i=0;i<MAXARCS;i++) arcs.push(spawnArc());
+const arcVerts=MAXARCS*KSEG*2, arcPos=new Float32Array(arcVerts*3), arcCol=new Float32Array(arcVerts*3);
+const arcGeo=new THREE.BufferGeometry();
+arcGeo.setAttribute('position',new THREE.BufferAttribute(arcPos,3));
+arcGeo.setAttribute('color',new THREE.BufferAttribute(arcCol,3));
+arcGeo.setDrawRange(0,P.arcCount*KSEG*2);
+const arcMat=new THREE.LineBasicMaterial({vertexColors:true, transparent:true, opacity:0.55, blending:THREE.AdditiveBlending, depthWrite:false});
+world.add(new THREE.LineSegments(arcGeo, arcMat));
+const _a3=new THREE.Vector3(), _b3=new THREE.Vector3(), _c3=new THREE.Vector3(), _pp=new THREE.Vector3();
+function arcPoint(arc, t, out){
+  const A=nodes[arc.a].pos, B=nodes[arc.b].pos;
+  _c3.copy(A).add(B).multiplyScalar(0.5).addScaledVector(arc.perp, arc.bow*A.distanceTo(B)*0.5*P.arcCurve);
+  const u=1-t;
+  out.set(u*u*A.x+2*u*t*_c3.x+t*t*B.x, u*u*A.y+2*u*t*_c3.y+t*t*B.y, u*u*A.z+2*u*t*_c3.z+t*t*B.z);
+  return out;
+}
+
+// packets fire across arcs
+const packets=[];
+for(let i=0;i<MAXPK;i++) packets.push({active:false, arc:null, from:0, prog:0, speed:0});
+const pkPos=new Float32Array(MAXPK*3), pkBright=new Float32Array(MAXPK);
+const pkGeo=new THREE.BufferGeometry();
+pkGeo.setAttribute('position',new THREE.BufferAttribute(pkPos,3));
+pkGeo.setAttribute('aBright',new THREE.BufferAttribute(pkBright,1));
+const pkMat=new THREE.ShaderMaterial({
+  uniforms:{ uViewH:{value:innerHeight*PIXR}, uCamZ:{value:50}, uR:{value:R}, uHot:{value:C_HOT}, uBright:{value:1.3} },
+  vertexShader:`attribute float aBright; uniform float uViewH,uCamZ,uR; varying float vD,vB;
+    void main(){ vB=aBright; vec4 mv=modelViewMatrix*vec4(position,1.0);
+      vD=clamp((-mv.z-(uCamZ-uR))/(2.0*uR),0.0,1.0);
+      gl_PointSize=(2.2+3.2*aBright)*(uViewH*0.00108)*(300.0/-mv.z); gl_Position=projectionMatrix*mv; }`,
+  fragmentShader:`precision mediump float; uniform vec3 uHot; uniform float uBright; varying float vD,vB;
+    void main(){ vec2 d=gl_PointCoord-0.5; float r2=dot(d,d); if(r2>0.25) discard;
+      float a=exp(-r2*8.0)*(1.0-vD*0.55)*vB; gl_FragColor=vec4(uHot*a*uBright,a); }`,
+  transparent:true, depthWrite:false, blending:THREE.AdditiveBlending });
+world.add(new THREE.Points(pkGeo, pkMat));
+const pkTrail=new Float32Array(MAXPK*2*3), pkTrailCol=new Float32Array(MAXPK*2*3);
+const pkTrailGeo=new THREE.BufferGeometry();
+pkTrailGeo.setAttribute('position',new THREE.BufferAttribute(pkTrail,3));
+pkTrailGeo.setAttribute('color',new THREE.BufferAttribute(pkTrailCol,3));
+world.add(new THREE.LineSegments(pkTrailGeo, new THREE.LineBasicMaterial({vertexColors:true, transparent:true, opacity:0.8, blending:THREE.AdditiveBlending, depthWrite:false})));
+
+function firePacket(arc, from){
+  for(let i=0;i<MAXPK;i++){ const p=packets[i]; if(!p.active){
+    p.active=true; p.arc=arc; p.from=from; p.prog=0; p.speed=(0.5+Math.random()*0.6)*(P.packetSpeed*2.2);
+    arcPoint(arc, from===0?0:arc.frac, _pp); pkPos[i*3]=_pp.x; pkPos[i*3+1]=_pp.y; pkPos[i*3+2]=_pp.z; pkBright[i]=0; return; } }
+}
+function ignite(i, strength){
+  const n=nodes[i]; n.fire=Math.min(1, Math.max(n.fire, strength||1));
+  const cnt=Math.max(1, Math.round(P.packetsPerThought));
+  for(let k=0;k<cnt;k++){ let tries=6, chosen=-1;
+    while(tries-- > 0){ const idx=(Math.random()*P.arcCount)|0; const ar=arcs[idx]; if(ar.a===i||ar.b===i){ chosen=idx; break; } }
+    if(chosen>=0){ const ar=arcs[chosen]; firePacket(ar, ar.a===i?0:1); } }
+}
+let pkAcc=0;
+function updateNeural(dt, t, speaking, listening, amp){
+  const vh=renderer.domElement.height;
+  neuronMat.uniforms.uViewH.value=vh; neuronMat.uniforms.uCamZ.value=camera.position.z; neuronMat.uniforms.uSize.value=P.nodeSize;
+  pkMat.uniforms.uViewH.value=vh; pkMat.uniforms.uCamZ.value=camera.position.z; pkMat.uniforms.uBright.value=P.packetBright;
+  arcMat.opacity=P.arcOpacity;
+  const dec=Math.exp(-dt/Math.max(0.05,P.fireDecay));
+  for(let i=0;i<MAXNODES;i++){ const n=nodes[i];
+    n.ang+=n.w*P.nodeDrift*dt; _pp.copy(n.base).applyAxisAngle(n.axis,n.ang);
+    n.pos.copy(_pp).multiplyScalar(1+0.05*Math.sin(t*n.bamp+n.bph));
+    nodePos[i*3]=n.pos.x; nodePos[i*3+1]=n.pos.y; nodePos[i*3+2]=n.pos.z;
+    n.fire*=dec; nodeFire[i]=n.fire; }
+  nGeo.setDrawRange(0,P.neuronCount|0); nGeo.attributes.position.needsUpdate=true; nGeo.attributes.aFire.needsUpdate=true;
+  // slow thought ignitions
+  let expect=(speaking?P.fireSpeak+amp*P.fireAmp : listening?P.fireSpeak*0.6 : P.fireIdle)*dt;
+  while(expect>0){ if(Math.random()<Math.min(1,expect)) ignite((Math.random()*P.neuronCount)|0,1); expect-=1; }
+  // rewire arcs (connections move from random arcs to others)
+  for(let i=0;i<P.arcCount;i++){ const ar=arcs[i]; ar.life-=dt; if(ar.life<=0 || Math.random()<P.rewire*dt) spawnArc(ar); }
+  // ambient packet trickle
+  pkAcc+=dt*P.packetBase;
+  while(pkAcc>1){ const ar=arcs[(Math.random()*P.arcCount)|0]; firePacket(ar, Math.random()<0.5?0:1); pkAcc-=1; }
+  // build arcs: dim baseline, brighten near firing nodes, dashed for the electronic look
+  for(let i=0;i<P.arcCount;i++){ const ar=arcs[i], fa=nodes[ar.a].fire, fb=nodes[ar.b].fire, base=i*KSEG*2;
+    for(let s=0;s<KSEG;s++){ const t0=(s/KSEG)*ar.frac, t1=((s+1)/KSEG)*ar.frac;
+      arcPoint(ar,t0,_a3); arcPoint(ar,t1,_b3); const o0=base+s*2, o1=o0+1;
+      arcPos[o0*3]=_a3.x; arcPos[o0*3+1]=_a3.y; arcPos[o0*3+2]=_a3.z;
+      arcPos[o1*3]=_b3.x; arcPos[o1*3+1]=_b3.y; arcPos[o1*3+2]=_b3.z;
+      const dash=fract(Math.sin((s+ar.seed)*12.9898)*43758.5453)<P.arcFrag?0.0:1.0;
+      const glow=fa*(1.0-t0)+fb*t0;
+      const b=dash*P.arcBright*(0.06+0.94*glow);
+      const cr=(C_GOLD.r*(1.0-glow)+C_HOT.r*glow)*b, cg=(C_GOLD.g*(1.0-glow)+C_HOT.g*glow)*b, cb=(C_GOLD.b*(1.0-glow)+C_HOT.b*glow)*b;
+      arcCol[o0*3]=cr; arcCol[o0*3+1]=cg; arcCol[o0*3+2]=cb; arcCol[o1*3]=cr; arcCol[o1*3+1]=cg; arcCol[o1*3+2]=cb; } }
+  arcGeo.setDrawRange(0,(P.arcCount|0)*KSEG*2); arcGeo.attributes.position.needsUpdate=true; arcGeo.attributes.color.needsUpdate=true;
+  // packets
+  for(let i=0;i<MAXPK;i++){ const p=packets[i];
+    if(!p.active){ pkBright[i]=0; pkPos[i*3]=0;pkPos[i*3+1]=0;pkPos[i*3+2]=0;
+      for(let k=0;k<6;k++){ pkTrail[i*6+k]=0; pkTrailCol[i*6+k]=0; } continue; }
+    const px=pkPos[i*3],py=pkPos[i*3+1],pz=pkPos[i*3+2];
+    p.prog+=dt*p.speed*(speaking?1.4:1.0);
+    if(p.prog>=1){ const tgt=p.from===0?p.arc.b:p.arc.a; nodes[tgt].fire=Math.min(1,nodes[tgt].fire+0.7);
+      if(Math.random()<P.ripple) ignite(tgt,0.9); p.active=false; pkBright[i]=0; continue; }
+    const tt=(p.from===0?p.prog:1-p.prog)*p.arc.frac; arcPoint(p.arc,tt,_pp);
+    pkPos[i*3]=_pp.x; pkPos[i*3+1]=_pp.y; pkPos[i*3+2]=_pp.z;
+    const tb=Math.sin(Math.min(p.prog,1)*Math.PI); pkBright[i]=tb;
+    pkTrail[i*6]=px; pkTrail[i*6+1]=py; pkTrail[i*6+2]=pz; pkTrail[i*6+3]=_pp.x; pkTrail[i*6+4]=_pp.y; pkTrail[i*6+5]=_pp.z;
+    pkTrailCol[i*6]=C_GOLD.r*0.14; pkTrailCol[i*6+1]=C_GOLD.g*0.14; pkTrailCol[i*6+2]=C_GOLD.b*0.14;
+    pkTrailCol[i*6+3]=C_HOT.r*tb; pkTrailCol[i*6+4]=C_HOT.g*tb; pkTrailCol[i*6+5]=C_HOT.b*tb; }
+  pkGeo.attributes.position.needsUpdate=true; pkGeo.attributes.aBright.needsUpdate=true;
+  pkTrailGeo.attributes.position.needsUpdate=true; pkTrailGeo.attributes.color.needsUpdate=true;
+}
+
+// ============================ FLARES ============================
+const NFLARE=70, flarePos=new Float32Array(NFLARE*3), flareLife=new Float32Array(NFLARE), flareSize=new Float32Array(NFLARE);
+const flareGeo=new THREE.BufferGeometry();
+flareGeo.setAttribute('position',new THREE.BufferAttribute(flarePos,3));
+flareGeo.setAttribute('aLife',new THREE.BufferAttribute(flareLife,1));
+flareGeo.setAttribute('aSize',new THREE.BufferAttribute(flareSize,1));
+const flareMat=new THREE.ShaderMaterial({
+  uniforms:{ uViewH:{value:innerHeight*PIXR}, uHot:{value:C_HOT} },
+  vertexShader:`attribute float aLife,aSize; uniform float uViewH; varying float vL;
+    void main(){ vL=aLife; vec4 mv=modelViewMatrix*vec4(position,1.0);
+      float env=sin(min(aLife,1.0)*3.14159);
+      gl_PointSize=aSize*env*(uViewH*0.00108)*(300.0/-mv.z); gl_Position=projectionMatrix*mv; }`,
+  fragmentShader:`precision mediump float; uniform vec3 uHot; varying float vL;
+    void main(){ vec2 d=gl_PointCoord-0.5; float r2=dot(d,d); if(r2>0.25||vL<=0.0) discard;
+      float env=sin(min(vL,1.0)*3.14159); float a=exp(-r2*9.0)*env; gl_FragColor=vec4(uHot*a*1.4,a); }`,
+  transparent:true, depthWrite:false, blending:THREE.AdditiveBlending });
+world.add(new THREE.Points(flareGeo, flareMat));
+function spawnFlare(){ for(let i=0;i<NFLARE;i++){ if(flareLife[i]<=0){
+  const b=bands[(Math.random()*(bands.length-1))|0], g=b.pts.geometry.attributes.position, k=(Math.random()*g.count)|0;
+  const v=new THREE.Vector3(g.getX(k),g.getY(k),g.getZ(k)).applyEuler(b.pivot.rotation);
+  flarePos[i*3]=v.x; flarePos[i*3+1]=v.y; flarePos[i*3+2]=v.z; flareLife[i]=1.0; flareSize[i]=rand(3.5,7.5); return; } } }
+
+// ============================ HAZE + CORE ============================
+const haze=new THREE.Mesh(new THREE.PlaneGeometry(R*4.6,R*4.6), new THREE.ShaderMaterial({
+  uniforms:{ uColor:{value:C_AMBER}, uInt:{value:0.20} }, transparent:true, depthWrite:false, depthTest:false, blending:THREE.AdditiveBlending,
+  vertexShader:`varying vec2 vUv; void main(){ vUv=uv; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0); }`,
+  fragmentShader:`varying vec2 vUv; uniform vec3 uColor; uniform float uInt; void main(){ float r=length(vUv-0.5)*2.0; float a=exp(-r*r*2.4)*uInt; gl_FragColor=vec4(uColor*a,a); }` }));
+haze.position.z=-R*1.5; haze.renderOrder=-1; scene.add(haze);
+
+const coreMat=new THREE.ShaderMaterial({
+  uniforms:{ uTime:{value:0}, uAmp:{value:0}, uEnergy:{value:0.3}, uSwirl:{value:0.22}, uVein:{value:0.5}, uDeep:{value:C_DEEP}, uGold:{value:C_GOLD}, uHot:{value:C_HOT} },
+  transparent:true, depthWrite:false, depthTest:false, blending:THREE.AdditiveBlending,
+  vertexShader:`varying vec2 vUv; void main(){ vUv=uv; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0); }`,
+  fragmentShader:`precision highp float; uniform float uTime,uAmp,uEnergy,uSwirl,uVein; uniform vec3 uDeep,uGold,uHot; varying vec2 vUv;
+    float hash(vec3 p){ p=fract(p*0.3183099+0.1); p*=17.0; return fract(p.x*p.y*p.z*(p.x+p.y+p.z)); }
+    float noise(vec3 x){ vec3 i=floor(x),f=fract(x); f=f*f*(3.0-2.0*f);
+      return mix(mix(mix(hash(i+vec3(0,0,0)),hash(i+vec3(1,0,0)),f.x),mix(hash(i+vec3(0,1,0)),hash(i+vec3(1,1,0)),f.x),f.y),
+                 mix(mix(hash(i+vec3(0,0,1)),hash(i+vec3(1,0,1)),f.x),mix(hash(i+vec3(0,1,1)),hash(i+vec3(1,1,1)),f.x),f.y),f.z); }
+    float fbm(vec3 p){ float a=0.5,s=0.0; for(int i=0;i<4;i++){ s+=a*noise(p); p=p*2.02+7.3; a*=0.5; } return s; }
+    void main(){ vec2 d=vUv*2.0-1.0; float r2=dot(d,d); if(r2>1.0) discard; float z=sqrt(1.0-r2); float dens=0.0;
+      for(int i=0;i<5;i++){ float fz=z*(1.0-float(i)*0.17); vec3 p=vec3(d,fz)*2.3;
+        float ang=uTime*uSwirl+length(p)*1.3; float ca=cos(ang),sa=sin(ang); p.xy=mat2(ca,-sa,sa,ca)*p.xy;
+        dens+=fbm(p+vec3(0.0,0.0,uTime*0.13)); }
+      dens*=0.2; float veins=smoothstep(0.40-uVein*0.12, 0.62-uVein*0.04, dens);
+      float hot=pow(smoothstep(0.52,0.90,dens),2.0);
+      vec3 col=mix(uDeep,uGold,veins); col=mix(col,uHot,hot*(0.55+uAmp*0.45));
+      float a=veins*smoothstep(1.0,0.45,r2)*uEnergy; gl_FragColor=vec4(col*a,a); }`,
+});
+const core=new THREE.Mesh(new THREE.PlaneGeometry(R*1.7,R*1.7), coreMat); core.renderOrder=-0.5; scene.add(core);
+
+// ============================ RENDER LOOP ============================
+const clock=new THREE.Clock(); const FRAME_MIN=1/32; let acc=0, fpsT=0, fpsN=0, flareAcc=0;
+const fpsEl=document.getElementById('fps');
+function animate(){
+  requestAnimationFrame(animate);
+  const fd=Math.min(clock.getDelta(),0.05); if(document.hidden||glLost) return;
+  acc+=fd; if(acc<FRAME_MIN) return; const dt=acc; acc=0; const t=clock.elapsedTime;
+  ampS+=(extAmp-ampS)*Math.min(1,dt*12);
+  const speaking=stateName==='speaking', listening=stateName==='listening';
+  const rotMul=(speaking?1.25+ampS*2.4:listening?1.6:1.0)*P.rotSpeed;
+  const flick=speaking?((1.0-P.flicker)+P.flicker*(0.5+0.5*Math.sin(t*27.0)*Math.sin(t*11.0+0.6))):1.0;
+  const energy=(speaking?P.idleEnergy+ampS*P.speakGain : listening?P.idleEnergy*1.5 : P.idleEnergy)*flick;
+  const heat=speaking?0.35+ampS*0.55:0.30;
+  bloom.strength=P.bloomBase+energy*P.bloomGain;
+  world.rotation.y+=dt*0.05*rotMul; world.rotation.x=Math.sin(t*0.07)*0.06;
+  for(const b of bands) b.pts.rotation.y+=dt*b.speed*rotMul;
+  world.scale.setScalar(1+(speaking?ampS*0.05:0)+P.breathe*Math.sin(t*0.68)+P.breathe*0.55*Math.sin(t*1.7+1.1));
+  for(const m of cloudMats){ m.uniforms.uTime.value=t; m.uniforms.uAmp.value=speaking?ampS:0; m.uniforms.uHeat.value=heat;
+    m.uniforms.uBright.value=(m===cloudMats[cloudMats.length-1])?energy*0.5:energy; }
+  const flareRate=speaking?6+ampS*26:listening?4:1.2; flareAcc+=dt*flareRate;
+  while(flareAcc>1){ spawnFlare(); flareAcc-=1; }
+  for(let i=0;i<NFLARE;i++){ if(flareLife[i]>0) flareLife[i]=Math.max(0,flareLife[i]-dt*1.6); }
+  flareGeo.attributes.aLife.needsUpdate=true; flareGeo.attributes.position.needsUpdate=true; flareGeo.attributes.aSize.needsUpdate=true;
+  updateNeural(dt, t, speaking, listening, ampS);
+  coreMat.uniforms.uTime.value=t; coreMat.uniforms.uAmp.value=speaking?ampS:0;
+  coreMat.uniforms.uEnergy.value=P.coreBase+energy*P.coreGain; coreMat.uniforms.uSwirl.value=P.coreSwirl; coreMat.uniforms.uVein.value=P.coreVein;
+  core.scale.setScalar(P.coreSize/1.7);
+  finishPass.uniforms.uTime.value=t; finishPass.uniforms.uAmp.value=speaking?ampS:0;
+  finishPass.uniforms.uAberr.value=P.aberration; finishPass.uniforms.uVignette.value=P.vignette; finishPass.uniforms.uGrain.value=P.grain;
+  composer.render();
+  fpsN++; fpsT+=dt; if(fpsT>=0.5&&fpsEl){ fpsEl.textContent=Math.round(fpsN/fpsT)+' fps'; fpsN=0; fpsT=0; }
+}
+fitCamera(); animate();
+addEventListener('resize', ()=>{ renderer.setSize(innerWidth,innerHeight); composer.setSize(innerWidth,innerHeight);
+  bloom.setSize(innerWidth,innerHeight); finishPass.uniforms.uRes.value.set(innerWidth,innerHeight); fitCamera(); });
+
+// ============================ CONTROL PANEL ============================
+const SPEC = [
+  ['BRIGHTNESS / MOTION', [
+    ['idleEnergy','idle level',0,1,0.01], ['speakGain','speak gain',0,2,0.01], ['flicker','speech flicker',0,0.5,0.01],
+    ['bloomBase','bloom base',0,1.5,0.01], ['bloomGain','bloom gain',0,1.5,0.01], ['breathe','breathe',0,0.05,0.001], ['rotSpeed','rotation',0,3,0.05],
+  ]],
+  ['NEURONS (thoughts)', [
+    ['neuronCount','count',10,200,1], ['nodeSize','size',0.5,5,0.1], ['nodeDrift','drift/move',0,3,0.05],
+    ['fireIdle','fire idle/s',0,6,0.1], ['fireSpeak','fire speak/s',0,12,0.1], ['fireAmp','fire×amp',0,30,0.5],
+    ['fireDecay','flash length',0.05,1.5,0.05], ['ripple','ripple chance',0,1,0.02],
+  ]],
+  ['ARCS (connections)', [
+    ['arcCount','count',0,260,1], ['arcOpacity','opacity',0,1,0.02], ['arcBright','brightness',0,2,0.05],
+    ['arcCurve','curve',0,1.5,0.05], ['arcFrag','fragment/dash',0,0.9,0.02], ['rewire','rewire rate',0,1.5,0.02],
+  ]],
+  ['PACKETS (bits)', [
+    ['packetBase','ambient/s',0,20,0.5], ['packetSpeed','speed',0.1,2,0.05], ['packetBright','brightness',0,3,0.05], ['packetsPerThought','per thought',0,5,0.5],
+  ]],
+  ['CORE', [
+    ['coreBase','base glow',0,0.6,0.01], ['coreGain','voice gain',0,1.5,0.02], ['coreSwirl','swirl speed',0,1,0.02], ['coreVein','vein contrast',0,1,0.02], ['coreSize','size',0.6,2.6,0.05],
+  ]],
+  ['POST / FILM', [
+    ['aberration','chromatic',0,0.03,0.001], ['vignette','vignette',0,1,0.05], ['grain','grain',0,0.08,0.002],
+  ]],
+];
+const tune = document.getElementById('tune');
+const rows = {};
+function buildPanel(){
+  let html = '<h1>J.A.R.V.I.S. — HUD TUNER</h1>';
+  for (const [group, items] of SPEC){
+    html += `<div class="grp">${group}</div>`;
+    for (const [key,label,min,max,step] of items){
+      html += `<div class="row"><label title="${key}">${label}</label>`+
+        `<input type="range" id="s_${key}" min="${min}" max="${max}" step="${step}" value="${P[key]}">`+
+        `<span class="v" id="v_${key}">${(+P[key]).toFixed(step<1?2:0)}</span></div>`;
+    }
+  }
+  html += '<div class="btns"><button id="bSave">Save</button><button id="bReset">Reset</button><button id="bCopy">Copy JSON</button></div>';
+  html += '<textarea id="jsonOut" readonly></textarea>';
+  html += '<div class="hint">Save persists to this browser. Copy JSON and paste it back to me to bake into the live HUD. Press H to hide this panel.</div>';
+  tune.innerHTML = html;
+  for (const [,items] of SPEC) for (const [key,,,,step] of items){
+    const s=document.getElementById('s_'+key), v=document.getElementById('v_'+key); rows[key]={s,v,step};
+    s.addEventListener('input', ()=>{ P[key]= step<1 ? parseFloat(s.value) : parseInt(s.value); v.textContent=(+P[key]).toFixed(step<1?2:0); });
+  }
+  document.getElementById('bSave').onclick = ()=>{ localStorage.setItem('jarvisHUDtune', JSON.stringify(P)); flash('Saved ✓'); };
+  document.getElementById('bReset').onclick = ()=>{ P=Object.assign({},DEFAULTS); localStorage.removeItem('jarvisHUDtune'); syncPanel(); };
+  document.getElementById('bCopy').onclick = ()=>{ const j=JSON.stringify(P,null,0); document.getElementById('jsonOut').value=j;
+    try{ navigator.clipboard.writeText(j); flash('Copied ✓'); }catch(e){ flash('Select + copy the box'); } };
+}
+function syncPanel(){ for(const k in rows){ rows[k].s.value=P[k]; rows[k].v.textContent=(+P[k]).toFixed(rows[k].step<1?2:0); } }
+let flashT; function flash(msg){ const b=document.getElementById('bSave'); const o=b.textContent; b.textContent=msg; clearTimeout(flashT); flashT=setTimeout(()=>b.textContent='Save',1200); }
+buildPanel();
+
+// state buttons + amp + hide key
+const sbtns=[...document.querySelectorAll('#state button')];
+function syncStateButtons(){ sbtns.forEach(b=>b.classList.toggle('active', b.dataset.state===stateName)); }
+sbtns.forEach(b=>b.addEventListener('click', ()=>window.jarvisHUD.setState(b.dataset.state)));
+const ampSlider=document.getElementById('amp'); ampSlider.addEventListener('input', ()=>window.jarvisHUD.setAmplitude(ampSlider.value));
+addEventListener('keydown', e=>{ if(e.key==='h'||e.key==='H') tune.style.display = tune.style.display==='none'?'block':'none'; });
+</script>
+</body>
+</html>

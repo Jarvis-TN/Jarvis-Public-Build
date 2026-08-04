@@ -1,0 +1,1009 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>J.A.R.V.I.S. — HUD (Age of Ultron preview)</title>
+<style>
+  html, body { margin:0; height:100%; background:#000; overflow:hidden;
+               font-family:"Consolas",monospace; color:#ffb24d; }
+  #app { position:fixed; inset:0; }
+  canvas { display:block; }
+  #aoutag { position:fixed; top:12px; left:14px; z-index:10; font-size:10px;
+    letter-spacing:2px; opacity:.4; user-select:none; }
+  /* tiny dev panel (hidden in app mode) */
+  #panel { position:fixed; left:14px; bottom:14px; z-index:10; font-size:12px;
+           background:rgba(8,6,3,.5); border:1px solid rgba(255,178,77,.25);
+           border-radius:8px; padding:8px 10px; backdrop-filter:blur(5px); }
+  #panel button { background:rgba(255,178,77,.1); color:#ffb24d;
+           border:1px solid rgba(255,178,77,.35); border-radius:5px; padding:5px 9px;
+           cursor:pointer; font:inherit; margin-right:4px; }
+  #panel button.active { background:rgba(255,178,77,.3); color:#fff; }
+  #panel input { width:120px; vertical-align:middle; accent-color:#ffb24d; }
+  #fps { opacity:.5; margin-left:6px; }
+
+  /* in-HUD controls: chat / mute / stop (visible in app mode) */
+  #hud-controls { position:fixed; right:16px; bottom:16px; z-index:30; display:flex; gap:8px; }
+  #hud-controls button { width:40px; height:40px; border-radius:50%;
+    background:rgba(20,12,4,.5); color:#ffb24d; border:1px solid rgba(255,178,77,.35);
+    font-size:15px; cursor:pointer; backdrop-filter:blur(6px); transition:background .15s; }
+  #hud-controls button:hover { background:rgba(255,178,77,.22); }
+  #hud-controls button.active { background:rgba(255,178,77,.32); color:#fff; }
+  /* frameless window: a full-window layer that lets you drag Jarvis around
+     (pywebview moves the window on drag), plus on-HUD min/close + a resize grip.
+     Inert unless the page is launched frameless. */
+  #dragregion { position:fixed; inset:0; z-index:1; pointer-events:none; }
+  body.frameless #dragregion { pointer-events:auto; }
+  #winchrome { position:fixed; top:14px; right:16px; z-index:40; display:none; gap:8px; }
+  #winchrome button { width:34px; height:34px; border-radius:50%;
+    background:rgba(20,12,4,.5); color:#ffb24d; border:1px solid rgba(255,178,77,.35);
+    font-size:14px; line-height:1; cursor:pointer; backdrop-filter:blur(6px); transition:background .15s; }
+  #winchrome button:hover { background:rgba(255,178,77,.22); }
+  #winClose:hover { background:rgba(255,90,70,.35); color:#fff; }
+  #resizeGrip { position:fixed; right:3px; bottom:3px; width:22px; height:22px; z-index:40;
+    cursor:nwse-resize; display:none; opacity:.55;
+    background:linear-gradient(135deg, transparent 55%, rgba(255,178,77,.75) 55%); }
+  #resizeGrip:hover { opacity:.9; }
+  body.frameless #winchrome, body.frameless #resizeGrip { display:flex; }
+  #chatwrap { position:fixed; left:50%; transform:translateX(-50%); bottom:70px;
+    width:min(560px,86vw); z-index:30; display:none; flex-direction:column; gap:6px; }
+  #chatlog { max-height:38vh; overflow-y:auto; padding:10px 12px; border-radius:10px;
+    background:rgba(10,7,3,.6); border:1px solid rgba(255,178,77,.2);
+    font-size:13px; line-height:1.45; backdrop-filter:blur(6px); }
+  #chatlog div { margin:3px 0; }
+  #chatlog .you { color:#ffd9a0; } #chatlog .jarvis { color:#ffb24d; }
+  #chatlog .system { color:#8a7a60; font-style:italic; font-size:12px; }
+  #chatinput { display:flex; gap:6px; }
+  #chatbox { flex:1; background:rgba(10,7,3,.7); border:1px solid rgba(255,178,77,.35);
+    color:#fde9c8; border-radius:8px; padding:9px 12px; font:inherit; outline:none; }
+  #sendBtn { background:rgba(255,178,77,.18); color:#ffb24d;
+    border:1px solid rgba(255,178,77,.4); border-radius:8px; padding:0 14px; cursor:pointer; }
+
+  /* ---- live data-viz panel: a glass card overlaying the orb ------------- */
+  #vizdeck { position:fixed; top:18px; right:18px; z-index:25;
+    width:min(360px,40vw); display:none; }
+  #vizcard { background:rgba(10,7,3,.62); border:1px solid rgba(255,178,77,.3);
+    border-radius:12px; padding:14px 16px 16px; backdrop-filter:blur(9px);
+    box-shadow:0 6px 30px rgba(0,0,0,.45), 0 0 22px rgba(255,178,77,.08);
+    color:#ffce92; animation:vizIn .35s ease; }
+  @keyframes vizIn { from{opacity:0; transform:translateY(-8px);} to{opacity:1; transform:none;} }
+  #vizcard.out { animation:vizOut .3s ease forwards; }
+  @keyframes vizOut { to{opacity:0; transform:translateY(-8px);} }
+  .viz-head { display:flex; align-items:baseline; justify-content:space-between; gap:8px;
+    border-bottom:1px solid rgba(255,178,77,.18); padding-bottom:8px; margin-bottom:10px; }
+  .viz-title { font-size:14px; font-weight:bold; color:#ffb24d; letter-spacing:.3px;
+    text-transform:uppercase; }
+  .viz-sub { font-size:11px; opacity:.6; }
+  .viz-close { cursor:pointer; color:#ffb24d; opacity:.55; font-size:14px; line-height:1;
+    background:none; border:none; padding:2px 4px; }
+  .viz-close:hover { opacity:1; }
+  .viz-metric { margin:9px 0; font-size:12px; }
+  .viz-metric .vm-top { display:flex; justify-content:space-between; margin-bottom:3px; }
+  .viz-metric .vm-val { color:#ffe2bf; font-variant-numeric:tabular-nums; }
+  .vm-track { height:7px; border-radius:4px; background:rgba(255,178,77,.12); overflow:hidden; }
+  .vm-fill { height:100%; border-radius:4px;
+    background:linear-gradient(90deg,#ff9a3c,#ffd27f); box-shadow:0 0 8px rgba(255,178,77,.5);
+    transition:width .5s ease; }
+  .viz-bars { display:flex; align-items:flex-end; gap:8px; height:120px; padding-top:6px; }
+  .viz-bars .vb { flex:1; display:flex; flex-direction:column; align-items:center; justify-content:flex-end; height:100%; }
+  .viz-bars .vb-fill { width:70%; border-radius:4px 4px 0 0;
+    background:linear-gradient(180deg,#ffd27f,#ff8a2c); box-shadow:0 0 8px rgba(255,178,77,.4);
+    transition:height .5s ease; min-height:2px; }
+  .viz-bars .vb-val { font-size:10px; color:#ffe2bf; margin-bottom:3px; font-variant-numeric:tabular-nums; }
+  .viz-bars .vb-lab { font-size:10px; opacity:.7; margin-top:5px; text-align:center;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:100%; }
+  .viz-item { padding:8px 10px; margin:7px 0; border-radius:8px;
+    background:rgba(255,178,77,.07); border:1px solid rgba(255,178,77,.14); }
+  .viz-item .vi-title { font-size:12.5px; color:#ffce92; font-weight:bold; }
+  .viz-item .vi-text { font-size:11.5px; opacity:.78; margin-top:2px; line-height:1.4; }
+  .viz-body { font-size:12.5px; line-height:1.5; color:#ffdcb4; white-space:pre-wrap; }
+</style>
+</head>
+<body>
+<div id="dragregion" class="pywebview-drag-region"></div>
+<div id="app"></div>
+<div id="vizdeck"></div>
+<!-- frameless window controls (shown only when launched frameless) -->
+<div id="winchrome">
+  <button id="winMin" title="Minimize">—</button>
+  <button id="winClose" title="Close Jarvis">✕</button>
+</div>
+<div id="resizeGrip" title="Drag to resize"></div>
+<div id="panel">
+  <button data-state="idle" class="active">IDLE</button>
+  <button data-state="listening">LISTENING</button>
+  <button data-state="speaking">SPEAKING</button>
+  <span> amp <input id="amp" type="range" min="0" max="1" step="0.01" value="0"></span>
+  <span id="bridge">○ local</span>
+  <span id="fps"></span>
+</div>
+
+<!-- in-HUD controls: chat / mute / stop -->
+<div id="hud-controls">
+  <button id="chatToggle" title="Chat">💬</button>
+  <button id="muteBtn" title="Mute / unmute mic">🔇</button>
+  <button id="stopBtn" title="Stop speaking">⏹</button>
+</div>
+<div id="chatwrap">
+  <div id="chatlog"></div>
+  <div id="chatinput">
+    <input id="chatbox" type="text" placeholder="Type to Jarvis…" autocomplete="off" />
+    <button id="sendBtn">Send</button>
+  </div>
+</div>
+
+<script type="importmap">
+{ "imports": {
+  "three": "./vendor/three/three.module.js",
+  "three/addons/": "./vendor/three/jsm/"
+}}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
+
+// ============================================================================
+//  J.A.R.V.I.S. — AGE OF ULTRON HOLOGRAM
+//  Reference: the golden "consciousness" point-cloud from the film (built by
+//  Animal Logic as procedurally lit particles). Design language:
+//    • the form is MADE OF tens of thousands of golden light specks
+//    • concentric ring platters at several inclinations, counter-rotating
+//    • specks clump into circuit-block clusters with organic gaps
+//    • color ramp burnt-orange → amber → gold → white-hot sparkles
+//    • constant shimmer; far side recedes into darkness (true volume)
+// ============================================================================
+const R = 18;
+const app = document.getElementById('app');
+const TRANSPARENT_HUD = new URLSearchParams(location.search).has('transparent');
+const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance',
+                                           alpha: TRANSPARENT_HUD });
+const PIXR = 1;                                   // 1x framebuffers keep WebView2 smooth
+renderer.setPixelRatio(PIXR);
+renderer.setSize(innerWidth, innerHeight);
+// deep blue-black backdrop, or fully clear so the desktop shows through (floating orb)
+renderer.setClearColor(0x010204, TRANSPARENT_HUD ? 0 : 1);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.1;
+app.appendChild(renderer.domElement);
+let glLost = false;
+renderer.domElement.addEventListener('webglcontextlost', (e) => { e.preventDefault(); glLost = true; }, false);
+renderer.domElement.addEventListener('webglcontextrestored', () => { glLost = false; }, false);
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, 0.1, 1000);
+camera.position.set(0, 0, 50);
+
+// Frame the whole hologram regardless of window shape. PerspectiveCamera.fov is
+// the VERTICAL field of view, so a narrow window has a smaller HORIZONTAL fov -
+// without this the sphere overflows the sides into a "blob". We pull the camera
+// back along whichever axis is tighter so the full sphere always fits, then push
+// the camera distance into the cloud shaders so the depth-fade window tracks it.
+const FIT_R = R * 1.18;                  // sphere radius to frame (with margin)
+function fitCamera(){
+  camera.aspect = innerWidth / innerHeight;
+  const halfV = THREE.MathUtils.degToRad(camera.fov) / 2;
+  const halfH = Math.atan(Math.tan(halfV) * camera.aspect);
+  const limit = Math.min(halfV, halfH);  // the tighter axis governs the fit
+  camera.position.z = FIT_R / Math.sin(limit);
+  camera.updateProjectionMatrix();
+  const vh = renderer.domElement.height || (innerHeight * PIXR);   // drawing-buffer height (px)
+  for (const m of cloudMats){
+    if (m.uniforms.uCamZ)  m.uniforms.uCamZ.value  = camera.position.z;
+    if (m.uniforms.uViewH) m.uniforms.uViewH.value = vh;
+  }
+  if (typeof flareMat !== 'undefined' && flareMat.uniforms.uViewH)
+    flareMat.uniforms.uViewH.value = vh;
+}
+
+const world = new THREE.Group();
+scene.add(world);
+
+const LITE = !new URLSearchParams(location.search).has('full');
+const BLOOM_SCALE = 1;                              // full-res bloom (GPU-backed WebGL2 confirmed)
+// Default composer targets — a custom MSAA/HDR target caused a flickering black
+// border on ANGLE/D3D11 (unresolved multisample edge), so we let it manage its own.
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, camera));
+const bloom = new UnrealBloomPass(
+  new THREE.Vector2(innerWidth, innerHeight).multiplyScalar(BLOOM_SCALE), 0.95, 0.40, 0.10);
+composer.addPass(bloom);
+composer.addPass(new OutputPass());
+// film-grade finish: faint radial chromatic aberration at bright edges + vignette + fine grain
+const finishPass = new ShaderPass({
+  uniforms: { tDiffuse:{ value:null }, uTime:{ value:0 }, uAmp:{ value:0 },
+              uAberr:{ value:0.006 }, uVignette:{ value:1.0 }, uGrain:{ value:0.022 },
+              uRes:{ value:new THREE.Vector2(innerWidth, innerHeight) } },
+  vertexShader: `varying vec2 vUv; void main(){ vUv=uv; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0); }`,
+  fragmentShader: `
+    precision highp float; uniform sampler2D tDiffuse; uniform float uTime, uAmp, uAberr, uVignette, uGrain; uniform vec2 uRes;
+    varying vec2 vUv;
+    void main(){
+      vec2 d = vUv - 0.5; float r2 = dot(d, d);
+      vec2 off = d * r2 * (uAberr + uAmp*uAberr*0.7);
+      vec3 col = vec3(texture2D(tDiffuse, vUv + off).r,
+                      texture2D(tDiffuse, vUv).g,
+                      texture2D(tDiffuse, vUv - off).b);
+      col *= mix(1.0, smoothstep(1.25, 0.30, r2 * 2.0), uVignette);
+      float g = fract(sin(dot(vUv*uRes + uTime*60.0, vec2(12.9898, 78.233))) * 43758.5453);
+      col += (g - 0.5) * uGrain;
+      gl_FragColor = vec4(col, 1.0);
+    }`,
+});
+composer.addPass(finishPass);
+composer.setPixelRatio(PIXR);
+
+// ---- palette (sampled from the film frame, tuned golden per user review) ---
+const C_DEEP = new THREE.Color(0.52, 0.20, 0.012);   // golden-brown (dim specks)
+const C_AMBER = new THREE.Color(0.95, 0.50, 0.06);   // golden amber (dominant)
+const C_GOLD = new THREE.Color(1.00, 0.74, 0.22);    // rich gold
+const C_HOT  = new THREE.Color(1.00, 0.92, 0.64);    // white-gold sparkle
+
+// ---- tuned parameters (baked from the HUD tuner; edit here to re-tune) -------
+const P = {
+  idleEnergy:0.4, speakGain:0.42, flicker:0.15, bloomBase:0.15, bloomGain:0.2,
+  breathe:0.028, rotSpeed:0.3,
+  neuronCount:27, nodeSize:1.2, nodeDrift:0.25,
+  fireIdle:0.2, fireSpeak:0.7, fireAmp:6.5, fireDecay:0.2, ripple:0.26,
+  arcCount:37, arcOpacity:0.8, arcBright:0.15, arcCurve:0.85, arcFrag:0.12, rewire:0.1,
+  packetBase:4, packetSpeed:0.1, packetBright:0.3, packetsPerThought:1,
+  coreBase:0.24, coreGain:0.54, coreSwirl:0.12, coreVein:0.26, coreSize:0.6,
+  aberration:0.025, vignette:0, grain:0,
+};
+
+// ============================================================================
+//  State + amplitude (same external interface as the current HUD)
+// ============================================================================
+let stateName = 'idle';
+let extAmp = 0, ampS = 0;
+window.jarvisHUD = {
+  setState(s){ stateName = s; syncButtons(); },
+  setAmplitude(a){ extAmp = Math.max(0, Math.min(1, +a||0)); },
+  getState(){ return stateName; },
+};
+
+// ============================================================================
+//  Shared point-cloud shader — soft round specks, per-particle twinkle,
+//  color ramp, manual depth fade (far hemisphere recedes like the film).
+// ============================================================================
+const pointVert = `
+  attribute float aSize; attribute float aMix; attribute float aPhase; attribute float aSpeed;
+  uniform float uTime; uniform float uAmp; uniform float uCamZ; uniform float uR; uniform float uViewH;
+  varying float vMix; varying float vTw; varying float vDepth;
+  void main(){
+    vec4 mv = modelViewMatrix * vec4(position, 1.0);
+    float tw = 0.5 + 0.5 * sin(uTime * aSpeed + aPhase);
+    tw = tw * tw;                              // bias twinkle toward brief peaks
+    vTw = tw; vMix = aMix;
+    // depth fade relative to the camera (front of sphere=0 -> back=1), so it
+    // stays correct when the camera pulls back to fit a narrow window.
+    vDepth = clamp((-mv.z - (uCamZ - uR)) / (2.0 * uR), 0.0, 1.0);
+    float size = aSize * (0.78 + 0.5 * tw) * (1.0 + uAmp * 0.45);
+    // size scales with VIEWPORT HEIGHT so specks stay a constant fraction of the
+    // frame at any window size - fixed-pixel sizing turned small windows to mush.
+    gl_PointSize = size * (uViewH * 0.00108) * (300.0 / -mv.z);
+    gl_Position = projectionMatrix * mv;
+  }`;
+const pointFrag = `
+  precision mediump float;
+  uniform vec3 uDeep; uniform vec3 uAmber; uniform vec3 uGold; uniform vec3 uHot;
+  uniform float uBright; uniform float uHeat;
+  varying float vMix; varying float vTw; varying float vDepth;
+  void main(){
+    vec2 d = gl_PointCoord - 0.5;
+    float r2 = dot(d, d);
+    if (r2 > 0.25) discard;
+    float fall = exp(-r2 * 11.0);                       // soft round speck
+    vec3 col = vMix < 0.5 ? mix(uDeep, uAmber, vMix * 2.0)
+                          : mix(uAmber, uGold, (vMix - 0.5) * 2.0);
+    float spark = pow(vTw, 3.0) * uHeat;                // hottest moments go white-gold
+    col = mix(col, uHot, spark * 0.85);
+    float a = fall * (0.38 + 0.62 * vTw) * uBright;
+    a *= 1.0 - vDepth * 0.78;                           // far side recedes into shadow
+    gl_FragColor = vec4(col * a, a);
+  }`;
+
+function makeCloudMaterial(){
+  return new THREE.ShaderMaterial({
+    uniforms: {
+      uTime:{ value:0 }, uPx:{ value:PIXR }, uAmp:{ value:0 },
+      uBright:{ value:0.9 }, uHeat:{ value:0.7 },
+      uCamZ:{ value:50 }, uR:{ value:R }, uViewH:{ value:innerHeight*PIXR },
+      uDeep:{ value:C_DEEP }, uAmber:{ value:C_AMBER },
+      uGold:{ value:C_GOLD }, uHot:{ value:C_HOT },
+    },
+    vertexShader: pointVert, fragmentShader: pointFrag,
+    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+  });
+}
+const cloudMats = [];   // every cloud material, so the loop can drive them together
+
+// ============================================================================
+//  THE RING PLATTERS — bands of clustered specks at distinct inclinations,
+//  each on its own pivot so they counter-rotate at different rates.
+// ============================================================================
+const rand = (a,b)=>a+Math.random()*(b-a);
+const randn = ()=> (Math.random()+Math.random()+Math.random()-1.5) * 0.8; // ~gaussian
+
+const bands = [];      // {group, speed, axisJitter}
+const strandPts = [];  // collected cluster points for the faint connective strands
+
+// band definitions: [radius xR, tilt(rad), thickness, count, rotSpeed]
+const BANDDEFS = [
+  [1.02,  0.10, 0.050,  6200,  0.060],
+  [0.94, -0.42, 0.060,  5600, -0.045],
+  [0.86,  0.78, 0.055,  5200,  0.085],
+  [0.76, -1.05, 0.070,  4600, -0.070],
+  [0.66,  0.32, 0.080,  4200,  0.110],
+  [0.55,  1.32, 0.085,  3600, -0.095],
+  [0.42, -0.65, 0.110,  3000,  0.140],
+];
+const CSCALE = LITE ? 0.5 : 1;     // LITE halves every population for software GL
+
+for (const [rx, tilt, thick, n0, speed] of BANDDEFS){
+  const n = Math.round(n0 * CSCALE);
+  const rad = R * rx;
+  const pos = new Float32Array(n*3);
+  const size = new Float32Array(n);
+  const mixA = new Float32Array(n);
+  const phase = new Float32Array(n);
+  const spd  = new Float32Array(n);
+
+  // cluster centers along the ring — the "circuit block" patches
+  const nClus = Math.round(rand(9, 14));
+  const clus = [];
+  for (let c = 0; c < nClus; c++){
+    clus.push({ th: Math.random()*Math.PI*2, span: rand(0.10, 0.42),
+                lift: randn()*thick*R*2.2, dens: rand(0.5, 1.0) });
+  }
+  for (let i = 0; i < n; i++){
+    let th, up, rr, inClus = Math.random() < 0.8;       // 80% clustered, 20% loose dust
+    if (inClus){
+      const c = clus[(Math.random()*nClus)|0];
+      th = c.th + randn()*c.span;
+      up = c.lift + randn()*thick*R*1.3;
+      rr = rad * (1 + randn()*thick*0.9);
+    } else {
+      th = Math.random()*Math.PI*2;
+      up = randn()*thick*R*3.2;
+      rr = rad * (1 + randn()*thick*1.6);
+    }
+    const x = Math.cos(th)*rr, z = Math.sin(th)*rr, y = up;
+    pos[i*3] = x; pos[i*3+1] = y; pos[i*3+2] = z;
+    size[i]  = inClus ? rand(0.9, 2.3) : rand(0.6, 1.4);
+    mixA[i]  = Math.min(1, Math.max(0, rand(0.15, 0.95) + (inClus ? 0.1 : -0.15)));
+    phase[i] = Math.random()*Math.PI*2;
+    spd[i]   = rand(0.6, 2.6);
+    if (inClus && Math.random() < 0.05) strandPts.push(new THREE.Vector3(x,y,z).applyAxisAngle(new THREE.Vector3(1,0,0), tilt));
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  geo.setAttribute('aSize',  new THREE.BufferAttribute(size, 1));
+  geo.setAttribute('aMix',   new THREE.BufferAttribute(mixA, 1));
+  geo.setAttribute('aPhase', new THREE.BufferAttribute(phase, 1));
+  geo.setAttribute('aSpeed', new THREE.BufferAttribute(spd, 1));
+  const mat = makeCloudMaterial();
+  cloudMats.push(mat);
+  const pts = new THREE.Points(geo, mat);
+  const pivot = new THREE.Group();
+  pivot.rotation.x = tilt;                       // platter inclination
+  pivot.rotation.z = rand(-0.15, 0.15);
+  pivot.add(pts);
+  world.add(pivot);
+  bands.push({ pivot, pts, speed });
+}
+
+// ============================================================================
+//  INNER NEBULA — a dim volumetric cloud filling the sphere's interior, so
+//  the hologram reads as a solid consciousness, not hollow rings.
+// ============================================================================
+{
+  const n = Math.round(9000 * CSCALE);
+  const pos = new Float32Array(n*3), size = new Float32Array(n);
+  const mixA = new Float32Array(n), phase = new Float32Array(n), spd = new Float32Array(n);
+  for (let i = 0; i < n; i++){
+    const u = Math.random(), v = Math.random();
+    const th = u*Math.PI*2, ph = Math.acos(2*v-1);
+    const rr = R * Math.pow(Math.random(), 0.55) * 0.92;   // denser toward mid-radius
+    pos[i*3]   = Math.sin(ph)*Math.cos(th)*rr;
+    pos[i*3+1] = Math.cos(ph)*rr*0.92;
+    pos[i*3+2] = Math.sin(ph)*Math.sin(th)*rr;
+    size[i] = rand(0.5, 1.3);
+    mixA[i] = rand(0.05, 0.55);                            // interior runs deeper/dimmer
+    phase[i] = Math.random()*Math.PI*2;
+    spd[i] = rand(0.4, 1.6);
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  geo.setAttribute('aSize', new THREE.BufferAttribute(size, 1));
+  geo.setAttribute('aMix', new THREE.BufferAttribute(mixA, 1));
+  geo.setAttribute('aPhase', new THREE.BufferAttribute(phase, 1));
+  geo.setAttribute('aSpeed', new THREE.BufferAttribute(spd, 1));
+  const mat = makeCloudMaterial();
+  mat.uniforms.uBright.value = 0.42;                       // nebula stays subdued (-15%)
+  cloudMats.push(mat);
+  const neb = new THREE.Points(geo, mat);
+  const pivot = new THREE.Group();
+  pivot.add(neb);
+  world.add(pivot);
+  bands.push({ pivot, pts: neb, speed: 0.03, nebula: true });
+}
+
+// CONNECTIVE STRANDS removed — they were always-on gold lines NOT governed by the
+// tuner's arc controls, so they stayed visible no matter the arc settings. The
+// NEURAL arcs below are the only line layer now (fully P-driven).
+
+// ============================================================================
+//  FLARES — a handful of larger sparks that flare up and die, the bright
+//  white-gold pinpoints scattered across the film frame. Rate follows state.
+// ============================================================================
+const NFLARE = 90;
+const flarePos = new Float32Array(NFLARE*3);
+const flareLife = new Float32Array(NFLARE);     // 0 = dead, else remaining life 0..1
+const flareSize = new Float32Array(NFLARE);
+{
+  for (let i = 0; i < NFLARE; i++) flareLife[i] = 0;
+}
+const flareGeo = new THREE.BufferGeometry();
+flareGeo.setAttribute('position', new THREE.BufferAttribute(flarePos, 3));
+flareGeo.setAttribute('aLife', new THREE.BufferAttribute(flareLife, 1));
+flareGeo.setAttribute('aSize', new THREE.BufferAttribute(flareSize, 1));
+const flareMat = new THREE.ShaderMaterial({
+  uniforms: { uViewH:{ value:innerHeight*PIXR }, uHot:{ value:C_HOT } },
+  vertexShader: `
+    attribute float aLife; attribute float aSize; uniform float uViewH;
+    varying float vL;
+    void main(){ vL = aLife;
+      vec4 mv = modelViewMatrix * vec4(position, 1.0);
+      float env = sin(min(aLife, 1.0) * 3.14159);
+      gl_PointSize = aSize * env * (uViewH * 0.00108) * (300.0 / -mv.z);
+      gl_Position = projectionMatrix * mv; }`,
+  fragmentShader: `
+    precision mediump float; uniform vec3 uHot; varying float vL;
+    void main(){ vec2 d = gl_PointCoord - 0.5; float r2 = dot(d,d);
+      if (r2 > 0.25 || vL <= 0.0) discard;
+      float fall = exp(-r2 * 9.0);
+      float env = sin(min(vL, 1.0) * 3.14159);
+      float a = fall * env;
+      gl_FragColor = vec4(uHot * a * 1.6, a); }`,
+  transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+});
+world.add(new THREE.Points(flareGeo, flareMat));
+function spawnFlare(){
+  for (let i = 0; i < NFLARE; i++){
+    if (flareLife[i] <= 0){
+      const b = bands[(Math.random()*(bands.length-1))|0];     // on a ring platter
+      const g = b.pts.geometry.attributes.position;
+      const k = (Math.random()*(g.count))|0;
+      const v = new THREE.Vector3(g.getX(k), g.getY(k), g.getZ(k))
+        .applyEuler(b.pivot.rotation);
+      flarePos[i*3]=v.x; flarePos[i*3+1]=v.y; flarePos[i*3+2]=v.z;
+      flareLife[i] = 1.0;
+      flareSize[i] = rand(3.5, 7.5);
+      return;
+    }
+  }
+}
+
+// ============================================================================
+//  NEURAL FIELD — drifting neurons + fragmented "electronic" arcs that rewire
+//  between nodes; slow thought-firings; packets that fire across an arc per
+//  thought. Behaviour tuned via P.* (baked from the HUD tuner).
+// ============================================================================
+const fract = x => x - Math.floor(x);
+const MAXNODES = 200, MAXARCS = 260, KSEG = 8, MAXPK = 140;
+const nodes = [];
+for (let i=0;i<MAXNODES;i++){
+  const u=Math.random(),v=Math.random(),th=u*Math.PI*2,ph=Math.acos(2*v-1),rr=R*(0.54+0.44*Math.cbrt(Math.random()));
+  nodes.push({ base:new THREE.Vector3(Math.sin(ph)*Math.cos(th)*rr, Math.cos(ph)*rr*0.94, Math.sin(ph)*Math.sin(th)*rr),
+    pos:new THREE.Vector3(), axis:new THREE.Vector3(randn(),randn(),randn()).normalize(),
+    w:rand(0.3,1.0)*(Math.random()<0.5?-1:1), ang:Math.random()*6.28, bph:Math.random()*6.28, bamp:rand(0.4,1.4),
+    fire:0, size:rand(0.7,1.6) });
+  nodes[i].pos.copy(nodes[i].base);
+}
+const nodePos=new Float32Array(MAXNODES*3), nodeSize=new Float32Array(MAXNODES), nodeFire=new Float32Array(MAXNODES);
+for(let i=0;i<MAXNODES;i++){ nodeSize[i]=nodes[i].size; nodePos[i*3]=nodes[i].pos.x; nodePos[i*3+1]=nodes[i].pos.y; nodePos[i*3+2]=nodes[i].pos.z; }
+const nGeo=new THREE.BufferGeometry();
+nGeo.setAttribute('position',new THREE.BufferAttribute(nodePos,3));
+nGeo.setAttribute('aSize',new THREE.BufferAttribute(nodeSize,1));
+nGeo.setAttribute('aFire',new THREE.BufferAttribute(nodeFire,1));
+nGeo.setDrawRange(0,P.neuronCount);
+const neuronMat=new THREE.ShaderMaterial({
+  uniforms:{ uViewH:{value:innerHeight*PIXR}, uCamZ:{value:50}, uR:{value:R}, uSize:{value:1},
+    uAmber:{value:C_AMBER}, uGold:{value:C_GOLD}, uHot:{value:C_HOT} },
+  vertexShader:`attribute float aSize,aFire; uniform float uViewH,uCamZ,uR,uSize; varying float vF,vDepth;
+    void main(){ vF=aFire; vec4 mv=modelViewMatrix*vec4(position,1.0);
+      vDepth=clamp((-mv.z-(uCamZ-uR))/(2.0*uR),0.0,1.0);
+      float size=aSize*uSize*(0.6+2.0*aFire);
+      gl_PointSize=size*(uViewH*0.00108)*(300.0/-mv.z); gl_Position=projectionMatrix*mv; }`,
+  fragmentShader:`precision mediump float; uniform vec3 uAmber,uGold,uHot; varying float vF,vDepth;
+    void main(){ vec2 d=gl_PointCoord-0.5; float r2=dot(d,d); if(r2>0.25) discard;
+      float fall=exp(-r2*10.0); vec3 col=mix(uAmber,uGold,0.45+0.55*vF); col=mix(col,uHot,vF*vF);
+      float a=fall*(0.06+0.94*vF); a*=1.0-vDepth*0.72; gl_FragColor=vec4(col*a,a); }`,
+  transparent:true, depthWrite:false, blending:THREE.AdditiveBlending });
+world.add(new THREE.Points(nGeo, neuronMat));
+
+const arcs = [];
+function chooseB(a, kind){
+  if (kind===0) return (Math.random()*P.neuronCount)|0;
+  let best=a, bd=1e9;
+  for(let s=0;s<8;s++){ const j=(Math.random()*P.neuronCount)|0; if(j===a) continue;
+    const d=nodes[a].base.distanceToSquared(nodes[j].base); if(d<bd){bd=d;best=j;} }
+  return best;
+}
+function spawnArc(o){
+  o=o||{}; o.a=(Math.random()*P.neuronCount)|0;
+  const roll=Math.random(); o.kind = roll<0.30?2 : roll<0.65?1 : 0;   // 2=bit 1=short 0=long
+  o.b=chooseB(o.a,o.kind);
+  o.frac = o.kind===2 ? rand(0.12,0.30) : o.kind===1 ? rand(0.45,0.8) : 1.0;
+  o.maxlife=rand(2.0,8.0); o.life=o.maxlife; o.bow=rand(-1,1);
+  o.perp=new THREE.Vector3(randn(),randn(),randn()).normalize(); o.seed=(Math.random()*1000)|0;
+  return o;
+}
+for(let i=0;i<MAXARCS;i++) arcs.push(spawnArc());
+const arcVerts=MAXARCS*KSEG*2, arcPos=new Float32Array(arcVerts*3), arcCol=new Float32Array(arcVerts*3);
+const arcGeo=new THREE.BufferGeometry();
+arcGeo.setAttribute('position',new THREE.BufferAttribute(arcPos,3));
+arcGeo.setAttribute('color',new THREE.BufferAttribute(arcCol,3));
+arcGeo.setDrawRange(0,P.arcCount*KSEG*2);
+const arcMat=new THREE.LineBasicMaterial({vertexColors:true, transparent:true, opacity:0.55, blending:THREE.AdditiveBlending, depthWrite:false});
+world.add(new THREE.LineSegments(arcGeo, arcMat));
+const _a3=new THREE.Vector3(), _b3=new THREE.Vector3(), _c3=new THREE.Vector3(), _pp=new THREE.Vector3();
+function arcPoint(arc, t, out){
+  const A=nodes[arc.a].pos, B=nodes[arc.b].pos;
+  _c3.copy(A).add(B).multiplyScalar(0.5).addScaledVector(arc.perp, arc.bow*A.distanceTo(B)*0.5*P.arcCurve);
+  const u=1-t;
+  out.set(u*u*A.x+2*u*t*_c3.x+t*t*B.x, u*u*A.y+2*u*t*_c3.y+t*t*B.y, u*u*A.z+2*u*t*_c3.z+t*t*B.z);
+  return out;
+}
+const packets=[];
+for(let i=0;i<MAXPK;i++) packets.push({active:false, arc:null, from:0, prog:0, speed:0});
+const pkPos=new Float32Array(MAXPK*3), pkBright=new Float32Array(MAXPK);
+const pkGeo=new THREE.BufferGeometry();
+pkGeo.setAttribute('position',new THREE.BufferAttribute(pkPos,3));
+pkGeo.setAttribute('aBright',new THREE.BufferAttribute(pkBright,1));
+const pkMat=new THREE.ShaderMaterial({
+  uniforms:{ uViewH:{value:innerHeight*PIXR}, uCamZ:{value:50}, uR:{value:R}, uHot:{value:C_HOT}, uBright:{value:1.3} },
+  vertexShader:`attribute float aBright; uniform float uViewH,uCamZ,uR; varying float vD,vB;
+    void main(){ vB=aBright; vec4 mv=modelViewMatrix*vec4(position,1.0);
+      vD=clamp((-mv.z-(uCamZ-uR))/(2.0*uR),0.0,1.0);
+      gl_PointSize=(2.2+3.2*aBright)*(uViewH*0.00108)*(300.0/-mv.z); gl_Position=projectionMatrix*mv; }`,
+  fragmentShader:`precision mediump float; uniform vec3 uHot; uniform float uBright; varying float vD,vB;
+    void main(){ vec2 d=gl_PointCoord-0.5; float r2=dot(d,d); if(r2>0.25) discard;
+      float a=exp(-r2*8.0)*(1.0-vD*0.55)*vB; gl_FragColor=vec4(uHot*a*uBright,a); }`,
+  transparent:true, depthWrite:false, blending:THREE.AdditiveBlending });
+world.add(new THREE.Points(pkGeo, pkMat));
+const pkTrail=new Float32Array(MAXPK*2*3), pkTrailCol=new Float32Array(MAXPK*2*3);
+const pkTrailGeo=new THREE.BufferGeometry();
+pkTrailGeo.setAttribute('position',new THREE.BufferAttribute(pkTrail,3));
+pkTrailGeo.setAttribute('color',new THREE.BufferAttribute(pkTrailCol,3));
+world.add(new THREE.LineSegments(pkTrailGeo, new THREE.LineBasicMaterial({vertexColors:true, transparent:true, opacity:0.8, blending:THREE.AdditiveBlending, depthWrite:false})));
+function firePacket(arc, from){
+  for(let i=0;i<MAXPK;i++){ const p=packets[i]; if(!p.active){
+    p.active=true; p.arc=arc; p.from=from; p.prog=0; p.speed=(0.5+Math.random()*0.6)*(P.packetSpeed*2.2);
+    arcPoint(arc, from===0?0:arc.frac, _pp); pkPos[i*3]=_pp.x; pkPos[i*3+1]=_pp.y; pkPos[i*3+2]=_pp.z; pkBright[i]=0; return; } }
+}
+function ignite(i, strength){
+  const n=nodes[i]; n.fire=Math.min(1, Math.max(n.fire, strength||1));
+  const cnt=Math.max(1, Math.round(P.packetsPerThought));
+  for(let k=0;k<cnt;k++){ let tries=6, chosen=-1;
+    while(tries-- > 0){ const idx=(Math.random()*P.arcCount)|0; const ar=arcs[idx]; if(ar.a===i||ar.b===i){ chosen=idx; break; } }
+    if(chosen>=0){ const ar=arcs[chosen]; firePacket(ar, ar.a===i?0:1); } }
+}
+let pkAcc=0;
+function updateNeural(dt, t, speaking, listening, amp){
+  const vh=renderer.domElement.height;
+  neuronMat.uniforms.uViewH.value=vh; neuronMat.uniforms.uCamZ.value=camera.position.z; neuronMat.uniforms.uSize.value=P.nodeSize;
+  pkMat.uniforms.uViewH.value=vh; pkMat.uniforms.uCamZ.value=camera.position.z; pkMat.uniforms.uBright.value=P.packetBright;
+  arcMat.opacity=P.arcOpacity;
+  const dec=Math.exp(-dt/Math.max(0.05,P.fireDecay));
+  for(let i=0;i<MAXNODES;i++){ const n=nodes[i];
+    n.ang+=n.w*P.nodeDrift*dt; _pp.copy(n.base).applyAxisAngle(n.axis,n.ang);
+    n.pos.copy(_pp).multiplyScalar(1+0.05*Math.sin(t*n.bamp+n.bph));
+    nodePos[i*3]=n.pos.x; nodePos[i*3+1]=n.pos.y; nodePos[i*3+2]=n.pos.z;
+    n.fire*=dec; nodeFire[i]=n.fire; }
+  nGeo.setDrawRange(0,P.neuronCount|0); nGeo.attributes.position.needsUpdate=true; nGeo.attributes.aFire.needsUpdate=true;
+  let expect=(speaking?P.fireSpeak+amp*P.fireAmp : listening?P.fireSpeak*0.6 : P.fireIdle)*dt;
+  while(expect>0){ if(Math.random()<Math.min(1,expect)) ignite((Math.random()*P.neuronCount)|0,1); expect-=1; }
+  for(let i=0;i<P.arcCount;i++){ const ar=arcs[i]; ar.life-=dt; if(ar.life<=0 || Math.random()<P.rewire*dt) spawnArc(ar); }
+  pkAcc+=dt*P.packetBase;
+  while(pkAcc>1){ const ar=arcs[(Math.random()*P.arcCount)|0]; firePacket(ar, Math.random()<0.5?0:1); pkAcc-=1; }
+  for(let i=0;i<P.arcCount;i++){ const ar=arcs[i], fa=nodes[ar.a].fire, fb=nodes[ar.b].fire, base=i*KSEG*2;
+    for(let s=0;s<KSEG;s++){ const t0=(s/KSEG)*ar.frac, t1=((s+1)/KSEG)*ar.frac;
+      arcPoint(ar,t0,_a3); arcPoint(ar,t1,_b3); const o0=base+s*2, o1=o0+1;
+      arcPos[o0*3]=_a3.x; arcPos[o0*3+1]=_a3.y; arcPos[o0*3+2]=_a3.z;
+      arcPos[o1*3]=_b3.x; arcPos[o1*3+1]=_b3.y; arcPos[o1*3+2]=_b3.z;
+      const dash=fract(Math.sin((s+ar.seed)*12.9898)*43758.5453)<P.arcFrag?0.0:1.0;
+      const glow=fa*(1.0-t0)+fb*t0;
+      const b=dash*P.arcBright*(0.06+0.94*glow);
+      const cr=(C_GOLD.r*(1.0-glow)+C_HOT.r*glow)*b, cg=(C_GOLD.g*(1.0-glow)+C_HOT.g*glow)*b, cb=(C_GOLD.b*(1.0-glow)+C_HOT.b*glow)*b;
+      arcCol[o0*3]=cr; arcCol[o0*3+1]=cg; arcCol[o0*3+2]=cb; arcCol[o1*3]=cr; arcCol[o1*3+1]=cg; arcCol[o1*3+2]=cb; } }
+  arcGeo.setDrawRange(0,(P.arcCount|0)*KSEG*2); arcGeo.attributes.position.needsUpdate=true; arcGeo.attributes.color.needsUpdate=true;
+  for(let i=0;i<MAXPK;i++){ const p=packets[i];
+    if(!p.active){ pkBright[i]=0; pkPos[i*3]=0;pkPos[i*3+1]=0;pkPos[i*3+2]=0;
+      for(let k=0;k<6;k++){ pkTrail[i*6+k]=0; pkTrailCol[i*6+k]=0; } continue; }
+    const px=pkPos[i*3],py=pkPos[i*3+1],pz=pkPos[i*3+2];
+    p.prog+=dt*p.speed*(speaking?1.4:1.0);
+    if(p.prog>=1){ const tgt=p.from===0?p.arc.b:p.arc.a; nodes[tgt].fire=Math.min(1,nodes[tgt].fire+0.7);
+      if(Math.random()<P.ripple) ignite(tgt,0.9); p.active=false; pkBright[i]=0; continue; }
+    const tt=(p.from===0?p.prog:1-p.prog)*p.arc.frac; arcPoint(p.arc,tt,_pp);
+    pkPos[i*3]=_pp.x; pkPos[i*3+1]=_pp.y; pkPos[i*3+2]=_pp.z;
+    const tb=Math.sin(Math.min(p.prog,1)*Math.PI); pkBright[i]=tb;
+    pkTrail[i*6]=px; pkTrail[i*6+1]=py; pkTrail[i*6+2]=pz; pkTrail[i*6+3]=_pp.x; pkTrail[i*6+4]=_pp.y; pkTrail[i*6+5]=_pp.z;
+    pkTrailCol[i*6]=C_GOLD.r*0.14; pkTrailCol[i*6+1]=C_GOLD.g*0.14; pkTrailCol[i*6+2]=C_GOLD.b*0.14;
+    pkTrailCol[i*6+3]=C_HOT.r*tb; pkTrailCol[i*6+4]=C_HOT.g*tb; pkTrailCol[i*6+5]=C_HOT.b*tb; }
+  pkGeo.attributes.position.needsUpdate=true; pkGeo.attributes.aBright.needsUpdate=true;
+  pkTrailGeo.attributes.position.needsUpdate=true; pkTrailGeo.attributes.color.needsUpdate=true;
+}
+
+// ============================================================================
+//  GLASS + HAZE — a whisper of fresnel containment and atmosphere.
+// ============================================================================
+const glass = new THREE.Mesh(
+  new THREE.SphereGeometry(R*1.08, 48, 36),
+  new THREE.ShaderMaterial({
+    uniforms: { uColor:{ value:C_GOLD }, uInt:{ value:0.10 } },
+    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+    vertexShader: `varying vec3 vN, vV; void main(){ vec4 mv=modelViewMatrix*vec4(position,1.0);
+      vN=normalize(normalMatrix*normal); vV=normalize(-mv.xyz); gl_Position=projectionMatrix*mv; }`,
+    fragmentShader: `varying vec3 vN, vV; uniform vec3 uColor; uniform float uInt;
+      void main(){ float f=pow(1.0-max(dot(vN,vV),0.0), 2.6); float a=f*uInt;
+        gl_FragColor=vec4(uColor*a, a); }`,
+  }));
+world.add(glass);
+
+const haze = new THREE.Mesh(
+  new THREE.PlaneGeometry(R*4.6, R*4.6),
+  new THREE.ShaderMaterial({
+    uniforms: { uColor:{ value:C_AMBER }, uInt:{ value:0.22 } },
+    transparent: true, depthWrite: false, depthTest: false, blending: THREE.AdditiveBlending,
+    vertexShader: `varying vec2 vUv; void main(){ vUv=uv; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0); }`,
+    fragmentShader: `varying vec2 vUv; uniform vec3 uColor; uniform float uInt;
+      void main(){ float r=length(vUv-0.5)*2.0; float a=exp(-r*r*2.4)*uInt; gl_FragColor=vec4(uColor*a, a); }`,
+  }));
+haze.position.z = -R*1.5;
+haze.renderOrder = -1;
+scene.add(haze);
+
+// ============================================================================
+//  VOLUMETRIC CORE — a raymarched sphere-impostor at the centre so the heart of
+//  the hologram reads as a swirling 3D volume (layered hot-spots + dark veins),
+//  not a flat glowing disc. Camera-facing; the internal turbulence is time-driven.
+// ============================================================================
+const coreMat = new THREE.ShaderMaterial({
+  uniforms:{ uTime:{ value:0 }, uAmp:{ value:0 }, uEnergy:{ value:0.3 }, uSwirl:{ value:0.22 }, uVein:{ value:0.5 },
+             uDeep:{ value:C_DEEP }, uGold:{ value:C_GOLD }, uHot:{ value:C_HOT } },
+  transparent:true, depthWrite:false, depthTest:false, blending:THREE.AdditiveBlending,
+  vertexShader:`varying vec2 vUv; void main(){ vUv=uv; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0); }`,
+  fragmentShader:`
+    precision highp float; uniform float uTime, uAmp, uEnergy, uSwirl, uVein; uniform vec3 uDeep, uGold, uHot;
+    varying vec2 vUv;
+    float hash(vec3 p){ p=fract(p*0.3183099+0.1); p*=17.0; return fract(p.x*p.y*p.z*(p.x+p.y+p.z)); }
+    float noise(vec3 x){ vec3 i=floor(x), f=fract(x); f=f*f*(3.0-2.0*f);
+      return mix(mix(mix(hash(i+vec3(0,0,0)),hash(i+vec3(1,0,0)),f.x),
+                     mix(hash(i+vec3(0,1,0)),hash(i+vec3(1,1,0)),f.x),f.y),
+                 mix(mix(hash(i+vec3(0,0,1)),hash(i+vec3(1,0,1)),f.x),
+                     mix(hash(i+vec3(0,1,1)),hash(i+vec3(1,1,1)),f.x),f.y),f.z); }
+    float fbm(vec3 p){ float a=0.5, s=0.0; for (int i=0;i<4;i++){ s+=a*noise(p); p=p*2.02+7.3; a*=0.5; } return s; }
+    void main(){
+      vec2 d = vUv*2.0-1.0; float r2 = dot(d,d); if (r2 > 1.0) discard;
+      float z = sqrt(1.0 - r2);
+      float dens = 0.0;
+      for (int i = 0; i < 5; i++){
+        float fz = z * (1.0 - float(i)*0.17);              // sample layered depth shells
+        vec3 p = vec3(d, fz) * 2.3;
+        float ang = uTime*uSwirl + length(p)*1.3;
+        float ca = cos(ang), sa = sin(ang);
+        p.xy = mat2(ca, -sa, sa, ca) * p.xy;               // gentle internal swirl
+        dens += fbm(p + vec3(0.0, 0.0, uTime*0.13));
+      }
+      dens *= 0.2;
+      float veins = smoothstep(0.40 - uVein*0.12, 0.62 - uVein*0.04, dens);  // low density -> dark veins
+      float hot   = pow(smoothstep(0.52, 0.90, dens), 2.0);// dense knots -> white-hot
+      vec3 col = mix(uDeep, uGold, veins);
+      col = mix(col, uHot, hot*(0.55 + uAmp*0.45));
+      float a = veins * smoothstep(1.0, 0.45, r2) * uEnergy;  // dim at rest, lights up with his voice
+      gl_FragColor = vec4(col * a, a);
+    }`,
+});
+const core = new THREE.Mesh(new THREE.PlaneGeometry(R*1.7, R*1.7), coreMat);
+core.renderOrder = -0.5;                                   // behind the specks, above the haze
+scene.add(core);
+
+// ============================================================================
+//  Render loop — state drives rotation, brightness, breath and flare rate.
+// ============================================================================
+const clock = new THREE.Clock();
+const FRAME_MIN = 1 / 32;
+let acc = 0, fpsT = 0, fpsN = 0, flareAcc = 0;
+function animate(){
+  requestAnimationFrame(animate);
+  const frameDt = Math.min(clock.getDelta(), 0.05);
+  if (document.hidden || glLost) return;
+  acc += frameDt;
+  if (acc < FRAME_MIN) return;
+  const dt = acc; acc = 0;
+  const t = clock.elapsedTime;
+  ampS += (extAmp - ampS) * Math.min(1, dt * 12);
+
+  const speaking = stateName === 'speaking';
+  const listening = stateName === 'listening';
+  const rotMul = (speaking ? 1.25 + ampS*2.4 : listening ? 1.6 : 1.0) * P.rotSpeed;
+  // ENERGY phases with his voice (all tuner-driven): DIM at rest, blooms up as he
+  // speaks, with a subtle high-frequency flicker only while speaking.
+  const flick = speaking ? ((1.0-P.flicker) + P.flicker*(0.5+0.5*Math.sin(t*27.0)*Math.sin(t*11.0 + 0.6))) : 1.0;
+  const energy = (speaking ? P.idleEnergy + ampS*P.speakGain : listening ? P.idleEnergy*1.5 : P.idleEnergy) * flick;
+  const bright = energy;
+  const heat   = speaking ? 0.35 + ampS*0.55 : 0.30;
+  bloom.strength = P.bloomBase + energy*P.bloomGain;
+
+  // counter-rotating platters + the whole world drifting slowly
+  world.rotation.y += dt * 0.05 * rotMul;
+  world.rotation.x = Math.sin(t*0.07) * 0.06;
+  for (const b of bands) b.pts.rotation.y += dt * b.speed * rotMul;
+
+  // breath: layered organic breathing, always alive, swelling with his voice
+  const breathe = 1 + (speaking ? ampS*0.05 : 0)
+                    + P.breathe*Math.sin(t*0.68) + P.breathe*0.55*Math.sin(t*1.7 + 1.1);
+  world.scale.setScalar(breathe);
+
+  for (const m of cloudMats){
+    m.uniforms.uTime.value = t;
+    m.uniforms.uAmp.value = speaking ? ampS : 0;
+    m.uniforms.uHeat.value = heat;
+    // nebula interior stays dimmer than the shell specks; both track energy
+    m.uniforms.uBright.value = (m === cloudMats[cloudMats.length-1]) ? energy*0.5 : energy;
+  }
+
+  // flares: occasional at idle, lively while he speaks
+  const flareRate = speaking ? 6 + ampS*26 : listening ? 4 : 1.2;
+  flareAcc += dt * flareRate;
+  while (flareAcc > 1){ spawnFlare(); flareAcc -= 1; }
+  for (let i = 0; i < NFLARE; i++){
+    if (flareLife[i] > 0) flareLife[i] = Math.max(0, flareLife[i] - dt*1.6);
+  }
+  flareGeo.attributes.aLife.needsUpdate = true;
+  flareGeo.attributes.position.needsUpdate = true;
+  flareGeo.attributes.aSize.needsUpdate = true;
+
+  updateNeural(dt, t, speaking, listening, ampS);   // drifting neurons, rewiring arcs, thought-packets
+
+  coreMat.uniforms.uTime.value = t;
+  coreMat.uniforms.uAmp.value = speaking ? ampS : 0;
+  coreMat.uniforms.uEnergy.value = P.coreBase + energy*P.coreGain;
+  coreMat.uniforms.uSwirl.value = P.coreSwirl;
+  coreMat.uniforms.uVein.value = P.coreVein;
+  core.scale.setScalar(P.coreSize/1.7);
+  finishPass.uniforms.uTime.value = t;
+  finishPass.uniforms.uAmp.value = speaking ? ampS : 0;
+  finishPass.uniforms.uAberr.value = P.aberration;
+  finishPass.uniforms.uVignette.value = P.vignette;
+  finishPass.uniforms.uGrain.value = P.grain;
+
+  composer.render();
+  fpsN++; fpsT += dt;
+  if (fpsT >= 0.5 && fpsEl){ fpsEl.textContent = Math.round(fpsN/fpsT)+' fps'; fpsN=0; fpsT=0; }
+}
+fitCamera();      // now that all cloud materials exist, frame the sphere correctly
+animate();
+
+addEventListener('resize', () => {
+  renderer.setSize(innerWidth, innerHeight); composer.setSize(innerWidth, innerHeight);
+  bloom.setSize(innerWidth*BLOOM_SCALE, innerHeight*BLOOM_SCALE);
+  finishPass.uniforms.uRes.value.set(innerWidth, innerHeight);
+  fitCamera();     // re-frame so the hologram fits any window shape (no more blob)
+});
+
+// dev panel + bridge
+const buttons = [...document.querySelectorAll('#panel button')];
+const ampSlider = document.getElementById('amp');
+const fpsEl = document.getElementById('fps');
+function syncButtons(){ buttons.forEach(b => b.classList.toggle('active', b.dataset.state===stateName)); }
+buttons.forEach(b => b.addEventListener('click', ()=>window.jarvisHUD.setState(b.dataset.state)));
+ampSlider.addEventListener('input', ()=>window.jarvisHUD.setAmplitude(ampSlider.value));
+if (new URLSearchParams(location.search).has('app')) document.getElementById('panel').style.display='none';
+
+// ============================================================================
+//  IN-HUD CHAT + CONTROLS  (identical to the production HUD)
+// ============================================================================
+const chatlog  = document.getElementById('chatlog');
+const chatwrap = document.getElementById('chatwrap');
+const chatbox  = document.getElementById('chatbox');
+const muteBtn  = document.getElementById('muteBtn');
+let jarvisLine = null;
+function addChat(role, text){
+  if (!chatlog) return;
+  if (role === 'jarvis_chunk'){
+    if (!text) return;
+    if (!jarvisLine){
+      jarvisLine = document.createElement('div');
+      jarvisLine.className = 'jarvis';
+      jarvisLine.textContent = 'Jarvis: ' + text;
+      chatlog.appendChild(jarvisLine);
+    } else {
+      jarvisLine.textContent += ' ' + text;
+    }
+    chatlog.scrollTop = chatlog.scrollHeight;
+    return;
+  }
+  if (role === 'jarvis_end'){ jarvisLine = null; return; }
+  if (!text) return;
+  jarvisLine = null;
+  const div = document.createElement('div');
+  div.className = role;
+  const who = role === 'you' ? 'You' : role === 'jarvis' ? 'Jarvis' : '•';
+  div.textContent = who + ': ' + text;
+  chatlog.appendChild(div);
+  chatlog.scrollTop = chatlog.scrollHeight;
+  while (chatlog.children.length > 100) chatlog.removeChild(chatlog.firstChild);
+}
+function sendChat(){
+  const t = chatbox.value.trim();
+  if (!t) return;
+  if (bridgeWS && bridgeWS.readyState === 1) sendCmd({ cmd:'chat', text:t });
+  else addChat('you', t);
+  chatbox.value = '';
+}
+document.getElementById('sendBtn').onclick = sendChat;
+chatbox.addEventListener('keydown', (e) => { if (e.key === 'Enter') sendChat(); });
+document.getElementById('chatToggle').onclick = (e) => {
+  const open = chatwrap.style.display === 'flex';
+  chatwrap.style.display = open ? 'none' : 'flex';
+  e.currentTarget.classList.toggle('active', !open);
+  if (!open) chatbox.focus();
+};
+muteBtn.onclick  = () => sendCmd({ cmd:'mute' });
+document.getElementById('stopBtn').onclick = () => sendCmd({ cmd:'stop' });
+
+// ============================================================================
+//  FRAMELESS WINDOW: drag anywhere + on-HUD minimize/close + corner resize.
+//  All native-window actions go through the pywebview api (guarded, so the page
+//  still runs fine in a plain browser). Dragging is handled by the
+//  #dragregion (pywebview-drag-region) layer; movement needs no JS here.
+// ============================================================================
+(function(){
+  const params = new URLSearchParams(location.search);
+  if (params.has('transparent')) {   // floating-orb look: let the desktop show through
+    document.documentElement.style.background = 'transparent';
+    document.body.style.background = 'transparent';
+  }
+  if (!params.has('frameless')) return;   // framed / browser: OS titlebar handles it
+  document.body.classList.add('frameless');
+  const api = () => (window.pywebview && window.pywebview.api) || null;
+  const winMin = document.getElementById('winMin');
+  const winClose = document.getElementById('winClose');
+  if (winMin)  winMin.onclick  = () => { const a = api(); if (a && a.minimize)  a.minimize(); };
+  if (winClose) winClose.onclick = () => { const a = api(); if (a && a.close_app) a.close_app(); };
+  // corner resize grip -> api.set_size, throttled to one call per animation frame
+  const grip = document.getElementById('resizeGrip');
+  if (grip) {
+    let winW = window.innerWidth, winH = window.innerHeight;
+    let sizing = false, sx = 0, sy = 0, sw = 0, sh = 0, pending = 0;
+    window.addEventListener('resize', () => { winW = window.innerWidth; winH = window.innerHeight; });
+    grip.addEventListener('pointerdown', e => {
+      sizing = true; sx = e.screenX; sy = e.screenY; sw = winW; sh = winH;
+      try { grip.setPointerCapture(e.pointerId); } catch (_) {}
+      e.preventDefault(); e.stopPropagation();
+    });
+    grip.addEventListener('pointermove', e => {
+      if (!sizing) return;
+      const w = Math.max(360, Math.round(sw + (e.screenX - sx)));
+      const h = Math.max(360, Math.round(sh + (e.screenY - sy)));
+      if (pending) return;
+      pending = requestAnimationFrame(() => {
+        pending = 0; const a = api(); if (a && a.set_size) a.set_size(w, h);
+        winW = w; winH = h;
+      });
+    });
+    const end = e => { sizing = false; try { grip.releasePointerCapture(e.pointerId); } catch (_) {} };
+    grip.addEventListener('pointerup', end);
+    grip.addEventListener('pointercancel', end);
+  }
+})();
+
+// ============================================================================
+//  LIVE DATA-VIZ PANELS  (identical to the production HUD)
+// ============================================================================
+const vizdeck = document.getElementById('vizdeck');
+const _esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g,
+  c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const _num = (v) => {
+  if (typeof v !== 'number' || !isFinite(v)) return '';
+  return (Math.abs(v) >= 100 || Number.isInteger(v)) ? Math.round(v).toString()
+                                                      : v.toFixed(1);
+};
+function renderPanel(p){
+  if (!vizdeck || !p) return;
+  const title = _esc(p.title || 'Panel');
+  const sub = p.subtitle ? `<div class="viz-sub">${_esc(p.subtitle)}</div>` : '';
+  let inner = '';
+  const items = Array.isArray(p.items) ? p.items : [];
+  if (p.kind === 'metrics'){
+    inner = items.map(it => {
+      const max = (typeof it.max === 'number' && it.max > 0) ? it.max : 100;
+      const pct = Math.max(0, Math.min(100, ((it.value || 0) / max) * 100));
+      const unit = it.unit ? _esc(it.unit) : '';
+      return `<div class="viz-metric"><div class="vm-top">
+        <span>${_esc(it.label || '')}</span>
+        <span class="vm-val">${_num(it.value)}${unit}</span></div>
+        <div class="vm-track"><div class="vm-fill" style="width:${pct}%"></div></div></div>`;
+    }).join('');
+  } else if (p.kind === 'bars'){
+    const peak = Math.max(1, ...items.map(it => Math.abs(it.value) || 0));
+    inner = `<div class="viz-bars">` + items.map(it => {
+      const h = Math.max(2, (Math.abs(it.value) || 0) / peak * 100);
+      const unit = it.unit ? _esc(it.unit) : '';
+      return `<div class="vb"><div class="vb-val">${_num(it.value)}${unit}</div>
+        <div class="vb-fill" style="height:${h}%"></div>
+        <div class="vb-lab" title="${_esc(it.label||'')}">${_esc(it.label||'')}</div></div>`;
+    }).join('') + `</div>`;
+  } else if (p.kind === 'list'){
+    inner = items.map(it => `<div class="viz-item">
+      <div class="vi-title">${_esc(it.title || it.label || '')}</div>
+      ${it.text ? `<div class="vi-text">${_esc(it.text)}</div>` : ''}</div>`).join('');
+  } else if (p.kind === 'text'){
+    inner = `<div class="viz-body">${_esc(p.body || '')}</div>`;
+  }
+  vizdeck.innerHTML = `<div id="vizcard"><div class="viz-head">
+      <div><div class="viz-title">${title}</div>${sub}</div>
+      <button class="viz-close" title="Dismiss">✕</button></div>${inner}</div>`;
+  vizdeck.style.display = 'block';
+  const btn = vizdeck.querySelector('.viz-close');
+  if (btn) btn.onclick = clearPanel;
+}
+function clearPanel(){
+  if (!vizdeck) return;
+  const card = vizdeck.querySelector('#vizcard');
+  if (!card){ vizdeck.style.display = 'none'; vizdeck.innerHTML = ''; return; }
+  card.classList.add('out');
+  setTimeout(() => { vizdeck.style.display = 'none'; vizdeck.innerHTML = ''; }, 300);
+}
+
+// ============================================================================
+//  LIVE BRIDGE  (identical to the production HUD)
+// ============================================================================
+const BRIDGE_URL = 'ws://localhost:8765';
+const bridgeEl = document.getElementById('bridge');
+let bridgeWS = null;
+function bridgeLive(on){
+  if (!bridgeEl) return;
+  bridgeEl.textContent = on ? '● live' : '○ local';
+  bridgeEl.style.color = on ? '#7CFFA0' : '';
+}
+function sendCmd(obj){
+  try { if (bridgeWS && bridgeWS.readyState === 1) bridgeWS.send(JSON.stringify(obj)); } catch (e) {}
+}
+(function connectBridge(){
+  let ws;
+  try { ws = new WebSocket(BRIDGE_URL); }
+  catch (e) { return setTimeout(connectBridge, 2000); }
+  ws.onopen = () => { bridgeWS = ws; bridgeLive(true); };
+  ws.onmessage = (ev) => {
+    try {
+      const d = JSON.parse(ev.data);
+      if (d.type === 'status') {
+        if (bridgeEl) bridgeEl.title = d.text;
+      } else if (d.type === 'transcript') {
+        addChat(d.role, d.text);
+      } else if (d.type === 'panel') {
+        renderPanel(d.panel);
+      } else if (d.type === 'panel_clear') {
+        clearPanel();
+      } else {
+        if (d.state) window.jarvisHUD.setState(d.state);
+        if (typeof d.level === 'number') window.jarvisHUD.setAmplitude(d.level);
+        if (muteBtn) muteBtn.classList.toggle('active', !!d.muted);
+      }
+      bridgeLive(true);
+    } catch (e) {}
+  };
+  ws.onclose = () => { bridgeWS = null; bridgeLive(false); setTimeout(connectBridge, 2000); };
+  ws.onerror = () => { try { ws.close(); } catch (e) {} };
+})();
+</script>
+</body>
+</html>
