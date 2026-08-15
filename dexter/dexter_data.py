@@ -51,11 +51,17 @@ CREATE TABLE IF NOT EXISTS pokemon (
     evolves_from  TEXT,
     capture_rate  INTEGER,
     flavor        TEXT,                   -- json list of {"version":..,"text":..}
+    abilities     TEXT,                   -- json list of {"name":..,"hidden":bool}
     artwork_url   TEXT,
     sprite_url    TEXT,
     synced_at     REAL
 );
 CREATE INDEX IF NOT EXISTS idx_pokemon_name ON pokemon(name);
+CREATE TABLE IF NOT EXISTS ability (
+    name          TEXT PRIMARY KEY,       -- api slug, e.g. "lightning-rod"
+    display_name  TEXT,
+    effect        TEXT
+);
 """
 
 _lock = threading.Lock()
@@ -66,6 +72,10 @@ def _connect():
     con = sqlite3.connect(DB_PATH)
     con.row_factory = sqlite3.Row
     con.executescript(_SCHEMA)
+    try:  # migrate databases synced before the abilities column existed
+        con.execute("ALTER TABLE pokemon ADD COLUMN abilities TEXT")
+    except sqlite3.OperationalError:
+        pass
     return con
 
 
@@ -132,10 +142,57 @@ def _fetch_one(species_url):
         "evolves_from": (sp.get("evolves_from_species") or {}).get("name"),
         "capture_rate": sp.get("capture_rate"),
         "flavor": json.dumps(flavor),
+        "abilities": json.dumps([{"name": a["ability"]["name"],
+                                  "hidden": a["is_hidden"]}
+                                 for a in pk.get("abilities", [])]),
         "artwork_url": art,
         "sprite_url": pk["sprites"].get("front_default"),
         "synced_at": time.time(),
     }
+
+
+def _fetch_ability(url):
+    ab = _get_json(url)
+    effect = None
+    for e in ab.get("effect_entries", []):
+        if e.get("language", {}).get("name") == "en":
+            effect = _clean_flavor(e.get("short_effect") or e.get("effect"))
+            break
+    if not effect:
+        for ft in reversed(ab.get("flavor_text_entries", [])):
+            if ft.get("language", {}).get("name") == "en":
+                effect = _clean_flavor(ft["flavor_text"])
+                break
+    return {"name": ab["name"],
+            "display_name": _english(ab.get("names", []), "name")
+            or ab["name"].replace("-", " ").title(),
+            "effect": effect}
+
+
+def sync_abilities(workers=8, progress=None):
+    """Pull every ability's name + effect text (a few hundred entries)."""
+    listing = _get_json(f"{API}/ability?limit=1000")["results"]
+    con = _connect()
+    done, errors = 0, []
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {pool.submit(_fetch_ability, e["url"]): e["name"]
+                   for e in listing}
+        for fut in as_completed(futures):
+            try:
+                row = fut.result()
+                with _lock:
+                    con.execute(
+                        "INSERT OR REPLACE INTO ability "
+                        "(name, display_name, effect) VALUES (?,?,?)",
+                        (row["name"], row["display_name"], row["effect"]))
+                    done += 1
+                if progress:
+                    progress(done, len(listing))
+            except Exception as exc:
+                errors.append((futures[fut], str(exc)))
+    con.commit()
+    con.close()
+    return done, errors
 
 
 def sync(limit=None, workers=8, progress=None):
@@ -178,7 +235,7 @@ def _row_to_dict(row):
     if row is None:
         return None
     d = dict(row)
-    for key in ("types", "stats", "flavor"):
+    for key in ("types", "stats", "flavor", "abilities"):
         if isinstance(d.get(key), str):
             try:
                 d[key] = json.loads(d[key])
@@ -237,20 +294,48 @@ def all_rows():
     return rows
 
 
-def find_named_in(text):
-    """Return the first Pokemon whose name appears in free-form text."""
+def find_all_named_in(text, limit=4):
+    """Every Pokemon named in free-form text, in order of appearance."""
     words = re.findall(r"[a-zA-Z][a-zA-Z\-'.]+", text.lower())
+    words = [w[:-2] if w.endswith("'s") else w for w in words]  # possessives
     if not words:
-        return None
+        return []
     con = _connect()
     names = {r["name"]: r["id"] for r in con.execute("SELECT name, id FROM pokemon")}
     con.close()
-    for i in range(len(words)):
+    found, i = [], 0
+    while i < len(words) and len(found) < limit:
         for j in (2, 1):  # try two-word names ("mr mime") before one-word
             cand = "-".join(words[i:i + j]).replace(".", "").replace("'", "")
-            if cand in names:
-                return get(names[cand])
-    return None
+            if cand in names and names[cand] not in found:
+                found.append(names[cand])
+                i += j
+                break
+        else:
+            i += 1
+    return [get(pid) for pid in found]
+
+
+def find_named_in(text):
+    """Return the first Pokemon whose name appears in free-form text."""
+    entries = find_all_named_in(text, limit=1)
+    return entries[0] if entries else None
+
+
+def get_ability(name):
+    con = _connect()
+    row = con.execute("SELECT * FROM ability WHERE name=?", (name,)).fetchone()
+    con.close()
+    return dict(row) if row else None
+
+
+def evolves_into(entry):
+    """Names of Pokemon that evolve FROM this one."""
+    con = _connect()
+    rows = con.execute("SELECT display_name FROM pokemon WHERE evolves_from=?",
+                       (entry["name"],)).fetchall()
+    con.close()
+    return [r["display_name"] for r in rows]
 
 
 def sprite_path(entry, fetch=True):
@@ -283,8 +368,13 @@ if __name__ == "__main__":
         done, errors = sync(limit=limit,
                             progress=lambda d, t: print(f"\r  {d}/{t}", end=""))
         print(f"\nDone: {done} species in {time.time()-t0:.0f}s, "
-              f"{len(errors)} errors. DB: {DB_PATH}")
-        for name, err in errors[:10]:
+              f"{len(errors)} errors.")
+        print("Syncing ability descriptions ...")
+        a_done, a_errors = sync_abilities(
+            progress=lambda d, t: print(f"\r  {d}/{t}", end=""))
+        print(f"\nDone: {a_done} abilities, {len(a_errors)} errors. "
+              f"DB: {DB_PATH}")
+        for name, err in (errors + a_errors)[:10]:
             print(f"  ! {name}: {err}")
     elif args and args[0] == "show":
         e = get(" ".join(args[1:]))

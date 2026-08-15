@@ -418,6 +418,20 @@ class DexterApp:
                       fill=T["screen_text"], font=self.mono(10),
                       width=sx2 - sx1 - 40, tags="screen_fg")
 
+    def flash_entry(self, entry):
+        """Show an entry with the identification flash — a double white-green
+        blink over the screen, like the show's dex locking onto a Pokemon."""
+        if not entry:
+            return
+        self.show_entry(entry)
+        for delay in (0, 170):
+            self.root.after(delay, self._flash_once)
+
+    def _flash_once(self):
+        rect = self.canvas.create_rectangle(*self.screen_box,
+                                            fill="#d8ffe4", outline="")
+        self.canvas.after(85, lambda: self.canvas.delete(rect))
+
     # -------------------------------------------------------------- events ---
 
     def _on_dpad(self, which):
@@ -477,8 +491,9 @@ class DexterApp:
             return
         self._set_state("listening")
         self.canvas.itemconfigure(self.mic_ring, outline="#ffcc00")
-        self.console("Listening... ask about any Pokemon, or say \"I'm "
-                     "thinking of a Pokemon\" to start the guessing game.")
+        self.console("Listening... ask me anything. Weaknesses, strengths, "
+                     "types, abilities, stats, evolutions, matchups — or say "
+                     "\"I'm thinking of a Pokemon\" and I will identify it.")
 
     def _finish_listening(self):
         self.canvas.itemconfigure(self.mic_ring, outline=THEME["dpad_hi"])
@@ -512,7 +527,7 @@ class DexterApp:
                     self._set_state("thinking")
                     reply, entry = self.brain.handle(arg)
                     if entry:
-                        self.root.after(0, self.show_entry, entry)
+                        self.root.after(0, self.flash_entry, entry)
                     self.root.after(0, self.console, reply)
                     self.voice.speak(reply)
                     self._set_state("idle")
@@ -526,7 +541,7 @@ class DexterApp:
                     self.root.after(0, self.console, f"> {heard}")
                     reply, entry = self.brain.handle(heard)
                     if entry:
-                        self.root.after(0, self.show_entry, entry)
+                        self.root.after(0, self.flash_entry, entry)
                     self.root.after(0, self.console, reply)
                     self.voice.speak(reply)
                     self._set_state("idle")
@@ -551,9 +566,11 @@ class DexterApp:
                 or dexter_data.random_one()
             if entry:
                 self.show_entry(entry)
-            greeting = ("Dexter, online. I hold records on "
-                        f"{n} Pokemon. Press the microphone and ask, or tell "
-                        "me you are thinking of one and I will identify it.")
+            greeting = ("Dexter, online. I hold complete records on "
+                        f"{n} Pokemon. Types, weaknesses, strengths, "
+                        "abilities, stats, evolutions. Press the microphone "
+                        "and ask me anything, or think of a Pokemon and I "
+                        "will identify it.")
             self.jobs.put(("speak", greeting))
         self.root.after(2200, finish)
 

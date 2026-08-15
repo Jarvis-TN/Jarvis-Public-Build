@@ -62,12 +62,25 @@ cadence.
 Click **MIC** (or hold **SPACE**), speak, release. Recording also auto-stops
 on silence. Transcription is local (faster-whisper, nothing leaves your PC).
 
-- *"Pikachu"* → shows and recites the entry
-- *"What is Charizard weak against?"* → Claude answer, grounded in the dex
-- *"I'm thinking of a Pokémon"* → 20-questions guessing game (yes / no /
-  skip); the question picker halves the remaining candidates each round,
-  fully offline
-- Arrow keys / D-pad browse; the search box takes a name or dex number
+Dexter is a question-answering repository first. A local knowledge engine
+(the full 18×18 type chart plus the synced database) answers the common
+question shapes **instantly and fully offline**, and whenever a Pokémon is
+identified its image and stats flash up on the screen:
+
+- *"What is Charizard weak against?"* → weaknesses, resistances, immunities
+- *"What is Gyarados strong against?"* → super-effective coverage
+- *"What type is Sylveon?"*, *"Is Mewtwo legendary?"*
+- *"What are Pikachu's powers?"* → abilities with their effect text
+- *"What does Eevee evolve into?"*, *"How fast is Jolteon?"*, *"stats"*
+- *"Who would win, Charizard or Blastoise?"* → type edge + stat totals
+- *"Does fire beat grass?"* → pure type matchups
+- *"I'm thinking of a Pokémon"* → Dexter interrogates you and identifies it,
+  flashing each guess on screen
+- Anything it can't parse locally goes to Claude (if a key is set), grounded
+  with the full database record — stats, abilities, computed weaknesses —
+  so answers stay factual.
+- Arrow keys / D-pad browse; the search box takes a name, dex number, or a
+  typed question.
 
 ## Matching the show's look
 

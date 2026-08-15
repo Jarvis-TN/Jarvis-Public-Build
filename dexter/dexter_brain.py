@@ -18,10 +18,8 @@ import json
 import re
 
 import dexter_data
-
-TYPES = ["normal", "fire", "water", "electric", "grass", "ice", "fighting",
-         "poison", "ground", "flying", "psychic", "bug", "rock", "ghost",
-         "dragon", "dark", "steel", "fairy"]
+import dexter_types
+from dexter_types import TYPES
 
 GEN_REGIONS = {1: "Kanto", 2: "Johto", 3: "Hoenn", 4: "Sinnoh", 5: "Unova",
                6: "Kalos", 7: "Alola", 8: "Galar", 9: "Paldea"}
@@ -180,7 +178,12 @@ class DexterBrain:
     # ------------------------------------------------------------- routes ---
 
     def handle(self, text):
-        """-> (spoken_reply, entry_to_show_or_None)."""
+        """-> (spoken_reply, entry_to_show_or_None).
+
+        Priority: active game -> game start -> local knowledge engine
+        (instant, offline: types, weaknesses, strengths, abilities, stats,
+        evolution, matchups, comparisons) -> Claude for everything else.
+        """
         text = (text or "").strip()
         if not text:
             return "I did not catch that. Speak clearly into my sensor.", None
@@ -190,21 +193,160 @@ class DexterBrain:
                 self.game = None
                 return "Very well. The game is abandoned. Ask me anything.", None
             line, done, revealed = self.game.answer(text)
+            entry = revealed
+            if (entry is None and self.game.pending
+                    and self.game.pending[0] == "guess"):
+                entry = self.game.last_guess  # flash the face of each guess
             if done:
                 self.game = None
-            return line, revealed
+            return line, entry
 
         if self.START_GAME.search(text):
             self.game = GuessGame()
             return self.game.start(), None
 
+        local = self._try_local(text)
+        if local is not None:
+            return local
+
         entry = dexter_data.find_named_in(text)
-        wants_more = re.search(r"\b(what|who|why|how|tell|explain|compare|"
-                               r"strong|weak|against|evolve|best|better)\b",
-                               text, re.I)
-        if entry and not wants_more:
-            return self.describe(entry), entry
         return self._ask_claude(text, entry), entry
+
+    # ---------------------------------------------- local knowledge engine ---
+
+    TYPE_RE = "|".join(TYPES)
+
+    def _try_local(self, text):
+        """Answer common question shapes straight from the database.
+        Returns (reply, entry) or None to fall through to Claude."""
+        t = text.lower()
+        entries = dexter_data.find_all_named_in(text)
+        entry = entries[0] if entries else None
+
+        # pure type vs type: "does fire beat grass", "is water good against fire"
+        m = re.search(rf"\b({self.TYPE_RE})\b.{{0,20}}?\b(?:beat|good against|"
+                      rf"strong against|effective against|work against|"
+                      rf"counter)s?\b.{{0,20}}?\b({self.TYPE_RE})\b", t)
+        if m and not entries:
+            return dexter_types.type_vs_type_sentence(m.group(1), m.group(2)), None
+
+        # two Pokemon named: matchup / comparison questions
+        if len(entries) >= 2:
+            a, b = entries[0], entries[1]
+            if re.search(r"\bfaster|quicker|speed\b", t):
+                fast = a if (a["stats"].get("speed", 0)
+                             >= b["stats"].get("speed", 0)) else b
+                slow = b if fast is a else a
+                return (f"{fast['display_name']} is faster, with base speed "
+                        f"{fast['stats'].get('speed', 0)} against "
+                        f"{slow['stats'].get('speed', 0)}.", fast)
+            if re.search(r"\bwin|beat|stronger|better|versus|\bvs\b|against|"
+                         r"fight|battle|match", t):
+                reply = dexter_types.head_to_head_sentence(a, b)
+                shown = a
+                if "advantage goes to" in reply:
+                    name = reply.rsplit("advantage goes to ", 1)[1].rstrip(".")
+                    shown = a if a["display_name"] == name else b
+                return reply, shown
+
+        if entry is None:
+            return None
+
+        # single Pokemon: intent by keyword
+        if re.search(r"\bweak|vulnerab|counter|what beats|how do i beat|"
+                     r"take.{0,8}down|resist|immune", t):
+            return dexter_types.weakness_sentence(entry), entry
+        if re.search(r"\bstrong against|good against|advantage|"
+                     r"super effective\b", t):
+            return dexter_types.strength_sentence(entry), entry
+        if re.search(r"\bwhat type|which type|\btypes?\b.{0,12}\bis\b|"
+                     r"\bis\b.{0,20}\btype\b", t):
+            return (f"{entry['display_name']} is "
+                    f"{dexter_types.type_phrase(entry.get('types') or [])}.",
+                    entry)
+        if re.search(r"\babilit|power|special skill|hidden abilit", t):
+            return self._abilities_sentence(entry), entry
+        if re.search(r"\bevolv", t):
+            return self._evolution_sentence(entry), entry
+        if re.search(r"\bstats?\b|base stat|how fast|how strong|attack stat|"
+                     r"defen[cs]e|\bspeed\b|hit points|\bhp\b", t):
+            return self._stats_sentence(entry, t), entry
+        if re.search(r"\bhow (tall|big|heavy|much)|height|weigh|size\b", t):
+            return (f"{entry['display_name']} stands "
+                    f"{entry['height_m']:.1f} meters tall and weighs "
+                    f"{entry['weight_kg']:.1f} kilograms.", entry)
+        if re.search(r"\blegendary|mythical\b", t):
+            kind = ("a mythical Pokemon" if entry.get("is_mythical")
+                    else "a legendary Pokemon" if entry.get("is_legendary")
+                    else "not legendary or mythical")
+            return f"{entry['display_name']} is {kind}.", entry
+        if re.search(r"\btell me about|who is|describe|what is\b", t):
+            return self.describe(entry), entry
+        # bare name ("pikachu") with no question words: recite the entry
+        if not re.search(r"\b(what|who|why|how|when|where|which|does|can|"
+                         r"should|compare|explain)\b", t):
+            return self.describe(entry), entry
+        return None  # a real question we can't parse -> Claude, with context
+
+    def _abilities_sentence(self, entry):
+        abilities = entry.get("abilities") or []
+        if not abilities:
+            return (f"My ability records for {entry['display_name']} are "
+                    "missing. Run the database sync again to add them.")
+        parts = []
+        for ab in abilities:
+            info = dexter_data.get_ability(ab["name"]) or {}
+            name = info.get("display_name") or ab["name"].replace("-", " ").title()
+            label = "Its hidden ability is" if ab.get("hidden") else \
+                ("Its ability is" if not parts else "It can also have")
+            line = f"{label} {name}."
+            if info.get("effect"):
+                line += f" {info['effect']}"
+            parts.append(line)
+        return f"{entry['display_name']}. " + " ".join(parts)
+
+    def _evolution_sentence(self, entry):
+        parts = []
+        if entry.get("evolves_from"):
+            parent = dexter_data.get(entry["evolves_from"])
+            parent_name = (parent["display_name"] if parent
+                           else entry["evolves_from"].title())
+            parts.append(f"{entry['display_name']} evolves from {parent_name}.")
+        nexts = dexter_data.evolves_into(entry)
+        if nexts:
+            joined = " or ".join(nexts)
+            parts.append(f"It evolves into {joined}.")
+        if not parts:
+            return f"{entry['display_name']} does not evolve."
+        if not nexts:
+            parts.append("It is the final form of its line.")
+        return " ".join(parts)
+
+    STAT_WORDS = {"speed": "speed", "fast": "speed", "attack": "attack",
+                  "defense": "defense", "defence": "defense", "hp": "hp",
+                  "health": "hp", "hit points": "hp"}
+
+    def _stats_sentence(self, entry, t):
+        stats = entry.get("stats") or {}
+        if "special attack" in t or "sp atk" in t or "special-attack" in t:
+            return (f"{entry['display_name']}'s base special attack is "
+                    f"{stats.get('special-attack', 0)}.")
+        if "special defense" in t or "sp def" in t:
+            return (f"{entry['display_name']}'s base special defense is "
+                    f"{stats.get('special-defense', 0)}.")
+        for word, key in self.STAT_WORDS.items():
+            if word in t:
+                return (f"{entry['display_name']}'s base {key} is "
+                        f"{stats.get(key, 0)}.")
+        total = sum(stats.values())
+        listing = ", ".join(
+            f"{label} {stats.get(key, 0)}"
+            for key, label in (("hp", "HP"), ("attack", "attack"),
+                               ("defense", "defense"),
+                               ("special-attack", "special attack"),
+                               ("special-defense", "special defense"),
+                               ("speed", "speed")))
+        return f"{entry['display_name']}'s base stats. {listing}. Total, {total}."
 
     # -------------------------------------------------------- dex entries ---
 
@@ -247,9 +389,11 @@ class DexterBrain:
         if not self.cfg.get("anthropic_api_key"):
             if entry:
                 return self.describe(entry)
-            return ("I need an Anthropic API key in my configuration for "
-                    "open questions. Name a Pokemon and I will recite its "
-                    "entry from my database.")
+            return ("That question is beyond my local circuits, and I have "
+                    "no Anthropic API key configured for deeper analysis. "
+                    "Ask me about a Pokemon's type, weaknesses, strengths, "
+                    "abilities, stats, or evolution, and I will answer from "
+                    "my own database.")
         try:
             client = self._ensure_client()
             content = text
@@ -260,6 +404,13 @@ class DexterBrain:
                          "is_legendary", "is_mythical", "generation",
                          "evolves_from")}
                 slim["flavor"] = [f["text"] for f in (entry.get("flavor") or [])[-3:]]
+                slim["abilities"] = entry.get("abilities")
+                slim["evolves_into"] = dexter_data.evolves_into(entry)
+                prof = dexter_types.defense_profile(entry.get("types") or [])
+                slim["takes_4x_from"] = prof[4.0]
+                slim["weak_to"] = prof[2.0]
+                slim["resists"] = prof[0.5] + prof[0.25]
+                slim["immune_to"] = prof[0.0]
                 content = (f"Database context: {json.dumps(slim)}\n\n"
                            f"Trainer asks: {text}")
             self._history.append({"role": "user", "content": content})
