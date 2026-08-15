@@ -34,6 +34,7 @@ class DexterVoice:
         self.on_state = on_state or (lambda state: None)
         self._sapi = None
         self._stop = threading.Event()
+        self.last_error = None   # why the last utterance fell back to SAPI
 
     def stop(self):
         self._stop.set()
@@ -44,17 +45,21 @@ class DexterVoice:
         if not text:
             return None
         self._stop.clear()
+        self.last_error = None
         self.on_state("speaking")
         try:
             engine = self.cfg.get("tts_engine", "auto")
             use_el = (engine in ("auto", "elevenlabs")
                       and self.cfg.get("elevenlabs_api_key")
                       and self.cfg.get("elevenlabs_voice_id"))
+            if engine in ("auto", "elevenlabs") and not use_el:
+                self.last_error = "ElevenLabs key or voice id missing in config.json"
             if use_el:
                 try:
                     self._speak_elevenlabs(text)
                     return "elevenlabs"
-                except Exception:
+                except Exception as exc:
+                    self.last_error = str(exc)[:300]
                     if engine == "elevenlabs":
                         raise
             self._speak_sapi(text)
@@ -129,16 +134,60 @@ class DexterVoice:
 
 
 if __name__ == "__main__":
+    # Verbose self-diagnostic: run  .venv\Scripts\python.exe dexter_voice.py
     import os
+    import traceback
+
     here = os.path.dirname(os.path.abspath(__file__))
-    cfg = {}
+    cfg, cfg_name = {}, None
     for name in ("config.json", "config.example.json"):
         path = os.path.join(here, name)
         if os.path.exists(path):
             cfg = json.load(open(path, encoding="utf-8"))
+            cfg_name = name
             break
-    voice = DexterVoice(cfg, on_level=lambda level: print(f"\rlevel {level:0.2f}", end=""))
-    used = voice.speak("Pikachu. The Mouse Pokemon. When several of these "
-                       "Pokemon gather, their electricity could build and "
-                       "cause lightning storms.")
-    print(f"\nspoke via: {used}")
+    print(f"config file : {cfg_name or 'NONE FOUND'}")
+    key = cfg.get("elevenlabs_api_key") or ""
+    vid = cfg.get("elevenlabs_voice_id") or ""
+    print(f"api key     : {key[:6] + '...' + key[-4:] if key else 'MISSING'}")
+    print(f"voice id    : {vid or 'MISSING'}")
+    print(f"tts_engine  : {cfg.get('tts_engine', 'auto')}")
+
+    if key:
+        print("checking account ...")
+        try:
+            r = requests.get("https://api.elevenlabs.io/v1/voices",
+                             headers={"xi-api-key": key}, timeout=30)
+            print(f"  voices endpoint: HTTP {r.status_code}")
+            if r.status_code == 200:
+                voices = {v["voice_id"]: v["name"]
+                          for v in r.json().get("voices", [])}
+                for v_id, v_name in voices.items():
+                    mark = "   <-- selected" if v_id == vid else ""
+                    print(f"    {v_id}  {v_name}{mark}")
+                if vid and vid not in voices:
+                    print("  PROBLEM: the selected voice id is not in this "
+                          "account's voice list. In ElevenLabs, open the "
+                          "voice and add it to My Voices, or copy the exact "
+                          "voice ID from its ... menu.")
+            else:
+                print("  PROBLEM: " + r.text[:300])
+        except Exception:
+            print("  PROBLEM reaching ElevenLabs:")
+            traceback.print_exc()
+
+    text = ("Pikachu. The Mouse Pokemon. When several of these Pokemon "
+            "gather, their electricity could build and cause lightning "
+            "storms.")
+    voice = DexterVoice(cfg)
+    if key and vid:
+        print("synthesis test (forcing ElevenLabs) ...")
+        try:
+            voice._speak_elevenlabs(text)
+            print("SUCCESS: that was the ElevenLabs Dexter voice.")
+        except Exception:
+            print("FAILED with:")
+            traceback.print_exc()
+    else:
+        used = voice.speak(text)
+        print(f"spoke via: {used} (ElevenLabs not configured)")

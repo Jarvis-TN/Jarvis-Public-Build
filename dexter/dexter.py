@@ -341,6 +341,9 @@ class DexterApp:
         self.console_full = text
         self.console_shown = 0
 
+    def console_append(self, text):
+        self.console_full += text
+
     # -------------------------------------------------------------- screen ---
 
     def show_entry(self, entry):
@@ -516,24 +519,34 @@ class DexterApp:
 
     # -------------------------------------------------------------- worker ---
 
+    def _speak(self, text):
+        """Speak and, if ElevenLabs fell back to the Windows voice, say why
+        on the console instead of failing silently."""
+        self.voice.speak(text)
+        if self.voice.last_error:
+            self.root.after(0, self.console_append,
+                            f"\n\n[voice] ElevenLabs unavailable: "
+                            f"{self.voice.last_error}\n[voice] Using the "
+                            "Windows voice for now.")
+
     def _worker(self):
         while True:
             job, arg = self.jobs.get()
             try:
                 if job == "speak":
                     self.root.after(0, self.console, arg)
-                    self.voice.speak(arg)
+                    self._speak(arg)
                 elif job == "speak_show":  # speak one text, display another
                     spoken, shown = arg
                     self.root.after(0, self.console, shown)
-                    self.voice.speak(spoken)
+                    self._speak(spoken)
                 elif job == "ask":
                     self._set_state("thinking")
                     reply, entry = self.brain.handle(arg)
                     if entry:
                         self.root.after(0, self.flash_entry, entry)
                     self.root.after(0, self.console, reply)
-                    self.voice.speak(reply)
+                    self._speak(reply)
                     self._set_state("idle")
                 elif job == "transcribe":
                     heard = self.ears.stop_and_transcribe()
@@ -547,7 +560,7 @@ class DexterApp:
                     if entry:
                         self.root.after(0, self.flash_entry, entry)
                     self.root.after(0, self.console, reply)
-                    self.voice.speak(reply)
+                    self._speak(reply)
                     self._set_state("idle")
             except Exception as exc:
                 self._set_state("idle")
