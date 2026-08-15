@@ -1,6 +1,10 @@
 {
     "_readme": "Copy to config.json (setup.bat does this) and fill in keys. config.json is gitignored.",
 
+    "trainer_name": "Walker",
+    "hometown": "Pallet",
+    "_trainer": "Used in the boot speech: \"...programmed by Professor Oak for Pokemon trainer <trainer_name> of the town of <hometown>...\"",
+
     "anthropic_api_key": "",
     "claude_model": "claude-sonnet-5",
 

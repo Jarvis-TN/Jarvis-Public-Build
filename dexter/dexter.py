@@ -523,6 +523,10 @@ class DexterApp:
                 if job == "speak":
                     self.root.after(0, self.console, arg)
                     self.voice.speak(arg)
+                elif job == "speak_show":  # speak one text, display another
+                    spoken, shown = arg
+                    self.root.after(0, self.console, shown)
+                    self.voice.speak(spoken)
                 elif job == "ask":
                     self._set_state("thinking")
                     reply, entry = self.brain.handle(arg)
@@ -566,12 +570,17 @@ class DexterApp:
                 or dexter_data.random_one()
             if entry:
                 self.show_entry(entry)
-            greeting = ("Dexter, online. I hold complete records on "
-                        f"{n} Pokemon. Types, weaknesses, strengths, "
-                        "abilities, stats, evolutions. Press the microphone "
-                        "and ask me anything, or think of a Pokemon and I "
-                        "will identify it.")
-            self.jobs.put(("speak", greeting))
+            trainer = self.cfg.get("trainer_name", "Walker")
+            hometown = self.cfg.get("hometown", "Pallet")
+            greeting = (f"I'm Dexter, a Pokedex programmed by Professor Oak "
+                        f"for Pokemon trainer {trainer} of the town of "
+                        f"{hometown}. My function is to provide {trainer} "
+                        "with information and advice regarding Pokemon and "
+                        "their training. If lost or stolen, I cannot be "
+                        "replaced.")
+            hint = ("\n\n[ MIC or SPACE to ask about any Pokemon —\n"
+                    "  or say \"I'm thinking of a Pokemon\" ]")
+            self.jobs.put(("speak_show", (greeting, greeting + hint)))
         self.root.after(2200, finish)
 
     def run(self):
