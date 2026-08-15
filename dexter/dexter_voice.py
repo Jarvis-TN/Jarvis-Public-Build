@@ -85,33 +85,63 @@ class DexterVoice:
                 "similarity_boost": self.cfg.get("voice_similarity", 0.85),
             },
         }
-        r = requests.post(url, json=payload, stream=True, timeout=60,
+        r = requests.post(url, json=payload, stream=True, timeout=(10, 60),
                           headers={"xi-api-key": self.cfg["elevenlabs_api_key"]})
         if r.status_code != 200:
             raise RuntimeError(f"ElevenLabs {r.status_code}: {r.text[:200]}")
 
-        # Download fully first (turbo streams fast), then play with per-block
-        # RMS so the lens flash follows the actual audio, not network jitter.
-        pcm = b"".join(chunk for chunk in r.iter_content(chunk_size=8192) if chunk)
-        audio = np.frombuffer(pcm, dtype=np.int16)
-        if audio.size == 0:
-            raise RuntimeError("ElevenLabs returned no audio")
+        # Stream playback as audio arrives (fast first word) in small 23ms
+        # blocks. Per-block RMS through an adaptive gain drives the lens, so
+        # the glow follows the actual inflection of the voice: loud syllables
+        # spike it, pauses drop it, quiet trailing words still register.
+        block_bytes = 512 * 2               # 512 samples @ 22050 Hz ≈ 23 ms
+        buf = bytearray()
+        agc = 1200.0                        # running loudness ceiling
+        got_audio = False
 
-        block = 735  # 22050 Hz / 30 fps
-        with sd.RawOutputStream(samplerate=22050, channels=1, dtype="int16") as out:
-            for i in range(0, len(audio), block):
+        def play_ready(out, final=False):
+            nonlocal buf, agc, got_audio
+            while len(buf) >= block_bytes or (final and len(buf) >= 2):
+                take = bytes(buf[:block_bytes])
+                if len(take) % 2:
+                    take = take[:-1]
+                del buf[:len(take)]
+                arr = np.frombuffer(take, dtype=np.int16)
+                if arr.size == 0:
+                    return
+                got_audio = True
+                rms = float(np.sqrt(np.mean(arr.astype(np.float64) ** 2)))
+                agc = max(rms, agc * 0.9985, 900.0)
+                level = (rms / agc) ** 0.65 if rms > 0 else 0.0
+                self.on_level(min(1.0, level))
+                out.write(take)
+                if self._stop.is_set():
+                    return
+
+        started = False
+        with sd.RawOutputStream(samplerate=22050, channels=1,
+                                dtype="int16") as out:
+            for chunk in r.iter_content(chunk_size=2048):
                 if self._stop.is_set():
                     break
-                chunk = audio[i:i + block]
-                rms = float(np.sqrt(np.mean(chunk.astype(np.float64) ** 2)))
-                self.on_level(min(1.0, rms / 6000.0))
-                out.write(chunk.tobytes())
+                if chunk:
+                    buf += chunk
+                if not started and len(buf) < 6000:
+                    continue                # ~0.14s pre-buffer, then roll
+                started = True
+                play_ready(out)
+            if not self._stop.is_set():
+                play_ready(out, final=True)
+        if not got_audio:
+            raise RuntimeError("ElevenLabs returned no audio")
 
     def _speak_sapi(self, text):
         import pyttsx3
-        if self._sapi is None:
-            self._sapi = pyttsx3.init()
-            self._sapi.setProperty("rate", int(self.cfg.get("sapi_rate", 175)))
+        # A fresh engine per utterance: reusing one pyttsx3 engine goes
+        # silent after the first runAndWait on Windows (known pyttsx3 bug) —
+        # that reads as "Dexter showed the answer but didn't say it".
+        engine = pyttsx3.init()
+        engine.setProperty("rate", int(self.cfg.get("sapi_rate", 175)))
         pulse_done = threading.Event()
 
         def pulse():
@@ -126,11 +156,15 @@ class DexterVoice:
         thread = threading.Thread(target=pulse, daemon=True)
         thread.start()
         try:
-            self._sapi.say(text)
-            self._sapi.runAndWait()
+            engine.say(text)
+            engine.runAndWait()
         finally:
             pulse_done.set()
             thread.join(timeout=1)
+            try:
+                engine.stop()
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":

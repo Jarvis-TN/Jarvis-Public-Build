@@ -24,7 +24,7 @@ class DexterEars:
         self._recording = False
         self._silent_blocks = 0
         self._max_blocks = int(cfg.get("mic_max_seconds", 15) * 10)
-        self._silence_limit = int(cfg.get("mic_silence_seconds", 1.6) * 10)
+        self._silence_limit = int(cfg.get("mic_silence_seconds", 1.0) * 10)
         self._threshold = float(cfg.get("mic_silence_threshold", 0.012))
 
     @property
@@ -95,8 +95,9 @@ class DexterEars:
         if float(np.sqrt(np.mean(audio ** 2))) < self._threshold / 2:
             return ""  # just room noise
         model = self._ensure_model()
-        segments, _info = model.transcribe(audio, language="en", beam_size=2,
-                                           vad_filter=True)
+        segments, _info = model.transcribe(audio, language="en", beam_size=1,
+                                           vad_filter=True,
+                                           condition_on_previous_text=False)
         return " ".join(s.text.strip() for s in segments).strip()
 
 

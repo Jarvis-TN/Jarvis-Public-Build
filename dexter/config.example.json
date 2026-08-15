@@ -21,6 +21,6 @@
     "stt_model": "base.en",
     "_stt_model": "faster-whisper model: tiny.en (fastest) | base.en | small.en (most accurate)",
     "mic_max_seconds": 15,
-    "mic_silence_seconds": 1.6,
+    "mic_silence_seconds": 1.0,
     "mic_silence_threshold": 0.012
 }
