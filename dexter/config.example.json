@@ -1,0 +1,22 @@
+{
+    "_readme": "Copy to config.json (setup.bat does this) and fill in keys. config.json is gitignored.",
+
+    "anthropic_api_key": "",
+    "claude_model": "claude-sonnet-5",
+
+    "tts_engine": "auto",
+    "_tts_engine": "auto = ElevenLabs when key+voice are set, else Windows SAPI. Or force: elevenlabs | sapi",
+    "elevenlabs_api_key": "",
+    "elevenlabs_voice_id": "",
+    "_elevenlabs_voice_id": "Create the Dexter voice in the ElevenLabs dashboard (Voice Design or Voice Lab) and paste its ID here.",
+    "elevenlabs_model": "eleven_turbo_v2_5",
+    "voice_stability": 0.65,
+    "voice_similarity": 0.85,
+    "sapi_rate": 175,
+
+    "stt_model": "base.en",
+    "_stt_model": "faster-whisper model: tiny.en (fastest) | base.en | small.en (most accurate)",
+    "mic_max_seconds": 15,
+    "mic_silence_seconds": 1.6,
+    "mic_silence_threshold": 0.012
+}
