@@ -75,29 +75,36 @@ def main():
                   f"{r.text[:200]}\nTry again.\n")
             continue
 
-        voices = {v["voice_id"]: v["name"]
-                  for v in r.json().get("voices", [])}
-        print(f"Key accepted. This account has {len(voices)} voices:")
-        for name in voices.values():
-            print(f"   - {name}")
-
-        want = cfg.get("elevenlabs_voice_id") or DEFAULT_VOICE
-        picked = want if want in voices else None
-        if picked is None:  # fall back to any voice named Dexter
-            for vid, name in voices.items():
-                if name.strip().lower() == "dexter":
-                    picked = vid
-                    break
-        if picked is None and voices:
-            picked = next(iter(voices))
-            print(f"\nNOTE: no voice named Dexter found - using "
-                  f"'{voices[picked]}' for now. Save your Dexter voice in "
-                  "ElevenLabs (My Voices) and run this again to switch.")
-        if picked is None:
+        all_voices = r.json().get("voices", [])
+        voices = {v["voice_id"]: v["name"] for v in all_voices}
+        # your own voices (cloned/designed), not the ~20 stock ones every
+        # account ships with
+        own = [v for v in all_voices
+               if v.get("category", "premade") != "premade"]
+        pool = own if own else all_voices
+        print(f"Key accepted. {len(all_voices)} voices total "
+              f"({len(all_voices) - len(own)} are ElevenLabs stock voices).")
+        if not all_voices:
             print("\nThis account has no voices yet. Create and SAVE the "
                   "Dexter voice at elevenlabs.io (it must appear under "
                   "My Voices), then run this again.\n")
             continue
+
+        print("\nYour voices:" if own else "\nAvailable voices:")
+        for i, v in enumerate(pool, 1):
+            print(f"   {i}. {v['name']}")
+
+        # best guess: configured ID if present, else a name containing "dex"
+        want = cfg.get("elevenlabs_voice_id") or DEFAULT_VOICE
+        guess = next((v for v in pool if v["voice_id"] == want), None)
+        if guess is None:
+            guess = next((v for v in pool
+                          if "dex" in v["name"].lower()), pool[0])
+        choice = input(f"\nPress Enter to use '{guess['name']}', or type a "
+                       "number from the list: ").strip()
+        if choice.isdigit() and 1 <= int(choice) <= len(pool):
+            guess = pool[int(choice) - 1]
+        picked = guess["voice_id"]
 
         cfg["elevenlabs_api_key"] = key
         cfg["elevenlabs_voice_id"] = picked
