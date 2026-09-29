@@ -23,7 +23,6 @@ python-pptx>=1.0.0
 opencv-python-headless>=4.9.0
 pygrabber>=0.2
 sherpa-onnx>=1.10.0
-segno>=1.6.0
 beautifulsoup4>=4.12.0
 requests>=2.31.0
 # MCP client - connect Jarvis to external tool servers (Slack/GitHub/Notion/...)

@@ -1,15 +1,14 @@
 # Jarvis on a Raspberry Pi (always-on headless host)
 
 Goal: run Jarvis 24/7 on a Pi plugged into your home switch, so you can reach him
-from your other devices (Telegram, the phone bridge, or a remote Cloudflare
-tunnel) even when your PC is off. These bridges make only **outbound** connections
+from your other devices (Telegram) even when your PC is off. These bridges make only **outbound** connections
 (to the Claude API + the relay), so **no port forwarding, no firewall changes, no
 static public IP** are needed — plugging the Pi into your network is all the
 "networking" required.
 
 What runs on the Pi: the Jarvis **brain** (Claude API), **Whisper** STT (local),
 **Piper** TTS (local, light), and whichever remote bridges you enable (Telegram,
-phone, remote tunnel, MCP). What does NOT: the desktop HUD, your mic, and the heavy
+MCP). What does NOT: the desktop HUD, your mic, and the heavy
 voice clones (XTTS/Chatterbox) — those stay on your PC.
 
 ## 1. Shopping list
@@ -73,8 +72,7 @@ Create `config.json` on the Pi (copy from `config.example.json`) with at least:
 "telegram_bot_token": "<your bot token>"
 ```
 (Keep secrets on the Pi only.) First run downloads the Whisper + Piper models.
-Enable whichever bridges you want — `telegram_enabled`, `phone_bridge_enabled`,
-`remote_access_enabled`, `mcp_enabled`.
+Enable whichever bridges you want — `telegram_enabled`, `mcp_enabled`.
 
 ## 7. Test it
 
@@ -119,5 +117,4 @@ your PC.
   to build, that's the one thing to debug live — ping me and we'll sort it.
 - Use **`tts_engine: piper`** on the Pi (XTTS/Chatterbox need torch and are too
   heavy for a Pi). ElevenLabs also works if you prefer the online voice.
-- The bridges need no inbound ports. The remote Cloudflare tunnel (for the phone
-  bridge or remote HUD) is still outbound-only.
+- The bridges need no inbound ports.

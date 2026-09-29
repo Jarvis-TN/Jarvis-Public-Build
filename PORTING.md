@@ -11,7 +11,7 @@ two things to save space — they're rebuilt/refetched anyway:
 
 - **`.venv\`** (several GB) — NOT portable (absolute paths). It gets deleted and
   rebuilt by `setup_desktop.bat`. Skip copying it.
-- **`voices\`, `bin\`** — model weights / cloudflared re-download on first run.
+- **`voices\`, `bin\`** — model weights re-download on first run.
   (Optional: copying `voices\clone\reference.wav` saves re-capturing your voice
   reference.)
 

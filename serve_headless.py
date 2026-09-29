@@ -1,7 +1,7 @@
 """Headless Jarvis for an always-on host (Raspberry Pi / home server / VPS).
 
 Runs the Jarvis BRAIN plus whichever remote bridges are enabled in config -
-phone bridge, remote tunnel, Telegram, MCP - with NO desktop microphone, HUD,
+Telegram, MCP - with NO desktop microphone, HUD,
 or GUI. The brain is the Claude API; speech-to-text is local Whisper; voice is
 local Piper (set "tts_engine": "piper"). This is what you run on the Pi so Jarvis
 is reachable from your other devices even when your PC is off.
@@ -53,12 +53,6 @@ def main():
     if cfg.get("mcp_enabled") and cfg.get("mcp_servers"):
         threading.Thread(target=engine._get_mcp, daemon=True).start()
         started.append("mcp")
-    if cfg.get("phone_bridge_enabled") or cfg.get("remote_access_enabled"):
-        threading.Thread(target=engine._run_phone_bridge, daemon=True).start()
-        started.append("phone")
-    if cfg.get("remote_access_enabled"):
-        threading.Thread(target=engine._run_remote_access, daemon=True).start()
-        started.append("remote")
     if cfg.get("telegram_enabled") and cfg.get("telegram_bot_token"):
         threading.Thread(target=engine._run_telegram_bridge, daemon=True).start()
         started.append("telegram")

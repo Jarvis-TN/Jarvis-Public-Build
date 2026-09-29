@@ -24,7 +24,6 @@ ddgs>=9.0.0
 pypdf>=5.0.0
 python-docx>=1.1.0
 fastembed>=0.3.0
-segno>=1.6.0
 # MCP client (optional)
 mcp>=1.0.0
 # Google Calendar/Gmail (optional - include if you want those tools)

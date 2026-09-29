@@ -22,5 +22,4 @@ function New-Lnk($name, $target, $desc) {
 Write-Host "Regenerating Jarvis shortcuts on $desktop ..."
 New-Lnk 'Jarvis.lnk'              'Launch Jarvis.bat'        'Launch Jarvis (classic window).'
 New-Lnk 'Jarvis HUD.lnk'         'Launch Jarvis HUD.bat'    'Launch Jarvis with the WebGL glass HUD.'
-New-Lnk 'Regenerate Jarvis URL.lnk' 'Regenerate Online URL.bat' 'Start remote access and generate a fresh public URL (copied to clipboard).'
 Write-Host "Done."

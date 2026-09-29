@@ -203,16 +203,6 @@ DEFAULT_CONFIG = {
     "prefetch_quiet_before_hour": 6,  # never pre-fetch before this hour (overnight guard)
     "hud_bridge": True,               # broadcast state/level to the WebGL HUD
     "hud_bridge_port": 8765,
-    # --- phone bridge: scan with your phone, Jarvis comments (LAN, token-gated) ---
-    "phone_bridge_enabled": False,    # opt-in: exposes a token-gated page on the local network
-    "phone_bridge_port": 8770,
-    "phone_bridge_token": "",         # auto-generated on first launch if blank
-    # --- remote access: expose the phone bridge over the internet via a free
-    # Cloudflare quick tunnel. OFF by default (internet-facing). When on, only
-    # the token-gated phone port is tunnelled (never the HUD control bridge), and
-    # the token is auto-upgraded to a strong 16-byte secret. ---
-    "remote_access_enabled": False,
-    "remote_access_provider": "cloudflare",   # "cloudflare" = free random URL; "cloudflare-named" = stable hostname
     # --- Telegram front-end: talk to Jarvis from any device via a bot ---
     "telegram_enabled": False,           # opt-in; needs a bot token from @BotFather
     "telegram_bot_token": "",
@@ -270,8 +260,6 @@ DEFAULT_CONFIG = {
     "gesture_announce_actions": True,         # speak a short confirmation on each action
     "gesture_share_camera": True,             # let the vision tool / face-auth use the sidecar's feed
     "gesture_frame_interval": 1.5,            # seconds between shared frames (0 = don't share)
-    "cloudflare_tunnel_token": "",            # connector token for a named (stable) tunnel
-    "cloudflare_hostname": "",                # the fixed hostname you mapped, e.g. jarvis.yourdomain.com
     "frontend": "tk",                 # "tk" = built-in window, "glass" = WebGL HUD window
     "glass_on_top": True,             # keep the glass HUD window above other windows
     "hud_frameless": True,            # glass HUD has no OS titlebar - drag it anywhere; controls live on the HUD
@@ -467,7 +455,7 @@ def running_instances():
     except Exception:
         return []
     me = os.getpid()
-    patterns = ("jarvis.py", "jarvis_glass.py", "serve_headless.py", "serve_remote.py")
+    patterns = ("jarvis.py", "jarvis_glass.py", "serve_headless.py")
     found = []
     for p in psutil.process_iter(["pid", "name", "cmdline"]):
         try:
@@ -1066,9 +1054,6 @@ class JarvisEngine:
         self._foresight_last = 0.0   # epoch of the last foresight pass
         self._last_foresight_key = None   # last surfaced nudge (for engagement learning)
         self._last_foresight_ts = 0.0
-        self.remote_tunnel = None    # Cloudflare quick tunnel (remote access)
-        self.remote_url = None       # public tunnel base URL once live
-        self.remote_link = None      # full pairing URL (base + /phone.html?token=)
 
         self._device = None     # resolved compute device ("cpu"/"cuda"), cached
         self._online_cache = None      # last connectivity check result
@@ -1400,12 +1385,6 @@ class JarvisEngine:
             threading.Thread(target=self._warm_chatterbox, daemon=True).start()
         if self.cfg.get("hud_bridge", True):
             threading.Thread(target=self._run_hud_bridge, daemon=True).start()
-        # remote access implies the phone bridge (it's what gets tunnelled)
-        if (self.cfg.get("phone_bridge_enabled", False)
-                or self.cfg.get("remote_access_enabled", False)):
-            threading.Thread(target=self._run_phone_bridge, daemon=True).start()
-        if self.cfg.get("remote_access_enabled", False):
-            threading.Thread(target=self._run_remote_access, daemon=True).start()
         if self.cfg.get("telegram_enabled", False) and self.cfg.get("telegram_bot_token"):
             threading.Thread(target=self._run_telegram_bridge, daemon=True).start()
         if self.cfg.get("mcp_enabled", False) and self.cfg.get("mcp_servers"):
@@ -1529,100 +1508,6 @@ class JarvisEngine:
         except Exception as e:
             self.transcript_cb("system", f"(HUD bridge unavailable: {e})")
 
-    # ---- phone bridge: scan with your phone, Jarvis comments on it ------- #
-    def phone_token(self):
-        """The shared pairing token; generated + persisted on first use. When
-        remote access is enabled the endpoint is internet-facing, so we require a
-        STRONG token (16 bytes) and upgrade a short LAN-only one in place."""
-        tok = (self.cfg.get("phone_bridge_token") or "").strip()
-        strong = bool(self.cfg.get("remote_access_enabled", False))
-        if not tok or (strong and len(tok) < 20):
-            import secrets
-            tok = secrets.token_urlsafe(16 if strong else 6)
-            self.cfg["phone_bridge_token"] = tok
-            try:
-                save_config_value("phone_bridge_token", tok)
-            except Exception:
-                pass
-        return tok
-
-    # ---- remote access: expose the phone bridge over the internet -------- #
-    def _run_remote_access(self):
-        """Put a public Cloudflare tunnel in front of the (LAN) phone bridge so
-        Jarvis is reachable from anywhere. Only the token-gated phone port is
-        exposed - never the HUD control bridge."""
-        try:
-            import jarvis_remote
-        except Exception as e:
-            self.transcript_cb("system", f"(Remote access unavailable: {e})")
-            return
-        port = int(self.cfg.get("phone_bridge_port", 8770))
-        time.sleep(1.5)   # let the phone bridge bind first
-
-        provider = (self.cfg.get("remote_access_provider") or "cloudflare").lower()
-        token = (self.cfg.get("cloudflare_tunnel_token") or "").strip()
-        # A named tunnel (stable hostname) - the hostname->service mapping lives in
-        # the Cloudflare dashboard; we just run the connector with its token.
-        if provider in ("cloudflare-named", "named") and token:
-            host = (self.cfg.get("cloudflare_hostname") or "").strip().rstrip("/")
-            self.remote_tunnel = jarvis_remote.NamedTunnel(token, status_cb=self.status_cb)
-            if not self.remote_tunnel.start():
-                self.transcript_cb("system",
-                    "(Remote access: couldn't start the named tunnel - cloudflared unavailable.)")
-                return
-            if host:
-                self.remote_url = f"https://{host}"
-                self.remote_link = f"https://{host}/phone.html?token={self.phone_token()}"
-                self.transcript_cb("system",
-                    f"🌐 Remote access live at your fixed address {self.remote_link}")
-                self._log_action(action="Started the named remote-access tunnel",
-                                 trigger="remote_access", confidence=1.0, decision="act",
-                                 impact="medium", reversible=True, outcome="done",
-                                 undo="set remote_access_enabled=false and restart")
-            else:
-                self.transcript_cb("system", "(Named tunnel running, but "
-                    "'cloudflare_hostname' isn't set - I can't show you the link.)")
-            return
-
-        # Otherwise a free quick tunnel (random ephemeral *.trycloudflare.com URL).
-        def _on_url(url):
-            self.remote_url = url
-            self.remote_link = f"{url}/phone.html?token={self.phone_token()}"
-            self.transcript_cb("system",
-                f"🌐 Remote access live - reach Jarvis from anywhere at {self.remote_link}")
-            self._log_action(action="Opened a public remote-access tunnel",
-                             trigger="remote_access", confidence=1.0, decision="act",
-                             impact="medium", reversible=True, outcome="done",
-                             undo="set remote_access_enabled=false and restart")
-        self.remote_tunnel = jarvis_remote.QuickTunnel(
-            f"http://127.0.0.1:{port}", on_url=_on_url, status_cb=self.status_cb)
-        if not self.remote_tunnel.start():
-            self.transcript_cb("system",
-                "(Remote access: couldn't start the tunnel - cloudflared unavailable.)")
-
-    def remote_pairing(self):
-        """(link, qr_svg|None) for reaching Jarvis remotely, or (None, None) if
-        the tunnel isn't up yet."""
-        if not self.remote_link:
-            return None, None
-        try:
-            import jarvis_phone
-            return self.remote_link, jarvis_phone.qr_svg(self.remote_link)
-        except Exception:
-            return self.remote_link, None
-
-    def phone_pairing(self):
-        """(url, qr_svg|None) for connecting a phone, or (None, None) if off."""
-        if not self.cfg.get("phone_bridge_enabled", False):
-            return None, None
-        try:
-            import jarvis_phone
-            port = int(self.cfg.get("phone_bridge_port", 8770))
-            url = jarvis_phone.pairing_url(self.phone_token(), port)
-            return url, jarvis_phone.qr_svg(url)
-        except Exception:
-            return None, None
-
     # ---- Telegram front-end --------------------------------------------- #
     def _run_telegram_bridge(self):
         """Answer Telegram messages with text replies (no voice) and pair the
@@ -1667,50 +1552,6 @@ class JarvisEngine:
                 TG.send_message(token, cid, text)
         except Exception:
             pass
-
-    def _run_phone_bridge(self):
-        try:
-            import jarvis_phone
-            port = int(self.cfg.get("phone_bridge_port", 8770))
-            url = jarvis_phone.pairing_url(self.phone_token(), port)
-            self.transcript_cb("system", f"📱 Phone bridge ready — pair at {url}")
-            jarvis_phone.run_phone_bridge(
-                self.phone_token(), self.commentary_on_image,
-                port=port, status_cb=self.status_cb)
-        except Exception as e:
-            self.transcript_cb("system", f"(Phone bridge unavailable: {e})")
-
-    def commentary_on_image(self, jpeg_bytes, prompt=""):
-        """Run a phone-scanned image through Claude's vision in Jarvis's voice and
-        return spoken commentary. Also logs the exchange to the HUD transcript."""
-        self.ensure_models()
-        b64 = base64.b64encode(jpeg_bytes).decode("ascii")
-        ask = (prompt or "").strip() or (
-            "I just scanned this with my phone camera. Identify what it is and give a "
-            "brief, natural spoken commentary - anything useful, interesting, or worth "
-            "knowing. Keep it to a few sentences.")
-        content = [
-            {"type": "image", "source": {"type": "base64",
-             "media_type": "image/jpeg", "data": b64}},
-            {"type": "text", "text": ask},
-        ]
-        resp = self._client.messages.create(
-            model=self.cfg["model"], max_tokens=512, system=self._system_prompt(),
-            messages=[{"role": "user", "content": content}],
-        )
-        text = "".join(b.text for b in resp.content if b.type == "text").strip()
-        if not text:
-            text = "I'm afraid I couldn't make that out, sir."
-        self.transcript_cb("you", f"[phone scan] {prompt or 'What is this?'}")
-        self.transcript_cb("jarvis", text)
-        # keep it in conversation context so the user can follow up on the desktop
-        self.history.append({"role": "user", "content": f"(scanned an image via phone) {ask}"})
-        self.history.append({"role": "assistant", "content": text})
-        try:
-            _save_json(CONVERSATION_PATH, self.history)
-        except Exception:
-            pass
-        return text
 
     def stop(self):
         self._running = False

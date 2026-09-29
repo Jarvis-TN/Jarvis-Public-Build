@@ -8,7 +8,7 @@ SECURITY - this is an SSRF-sensitive surface. The URL is frequently chosen by th
 model, which can be steered by untrusted content (web results, RAG documents,
 emails). A naive fetcher is a server-side request forgery hole straight into the
 local network - including Jarvis's own localhost services (the HUD bridge on
-8765, the phone bridge, router admin pages, cloud metadata endpoints). So this
+8765, router admin pages, cloud metadata endpoints). So this
 module:
   * allows only http/https schemes;
   * resolves the host and REJECTS any address that is loopback, private,

@@ -656,23 +656,6 @@ TOOLS = [
         },
     },
     {
-        "name": "connect_phone",
-        "description": "Show how to pair the user's phone with Jarvis - puts a QR code on "
-                       "the display and reads out the link. Once paired, they can scan things "
-                       "with their phone camera and you'll comment on them. Use for 'connect "
-                       "my phone', 'pair my phone', 'how do I use my phone', 'phone camera'.",
-        "input_schema": {"type": "object", "properties": {}},
-    },
-    {
-        "name": "get_remote_link",
-        "description": "Give the user the link to reach Jarvis from OUTSIDE the home "
-                       "network (over the internet), and put its QR code on the display. "
-                       "Use for 'how do I reach you remotely', 'remote link', 'access you "
-                       "from outside', 'when I'm away'. Only works when remote access is "
-                       "enabled; otherwise explain how to turn it on.",
-        "input_schema": {"type": "object", "properties": {}},
-    },
-    {
         "name": "close_visual",
         "description": "Hide and clear 'the display' (the separate picture/visual window). "
                        "Use when the user is done with it or asks to close, hide, dismiss, or "
@@ -1728,66 +1711,6 @@ def _display_visual(title, svg, engine=None):
         if pushed:
             return f"I've sent '{title}' to the display, sir."
         return f"I couldn't show the picture, sir: {e}"
-
-
-def _connect_phone(engine=None):
-    if engine is None or not hasattr(engine, "phone_pairing"):
-        return "The phone bridge isn't available right now, sir."
-    cfg = getattr(engine, "cfg", {}) or {}
-    if not cfg.get("phone_bridge_enabled", False):
-        return ("The phone bridge is switched off, sir. Set 'phone_bridge_enabled' to true "
-                "in config.json and restart me, then ask again to pair your phone.")
-    url, qr = engine.phone_pairing()
-    if not url:
-        return "I couldn't start the phone pairing, sir."
-    if qr and hasattr(engine, "display_visual"):
-        # frame the QR with a caption + the URL on a dark card for the display
-        card = (
-            "<svg viewBox='0 0 420 500' xmlns='http://www.w3.org/2000/svg'>"
-            "<rect width='420' height='500' rx='16' fill='#0a0703'/>"
-            "<text x='210' y='44' fill='#ffb24d' font-size='20' text-anchor='middle' "
-            "font-family='Consolas,monospace' letter-spacing='2'>SCAN TO CONNECT PHONE</text>"
-            f"<g transform='translate(60,70)'>{qr}</g>"
-            "<text x='210' y='470' fill='#ffce92' font-size='13' text-anchor='middle' "
-            f"font-family='Consolas,monospace'>{url}</text></svg>")
-        try:
-            engine.display_visual("Connect your phone", card)
-        except Exception:
-            pass
-    return (f"I've put a QR code on the display, sir - scan it with your phone's camera to "
-            f"open the page, then add it to your home screen. The link is {url}")
-
-
-def _get_remote_link(engine=None):
-    if engine is None or not hasattr(engine, "remote_pairing"):
-        return "Remote access isn't available in this build, sir."
-    cfg = getattr(engine, "cfg", {}) or {}
-    if not cfg.get("remote_access_enabled", False):
-        return ("Remote access is switched off, sir. Set 'remote_access_enabled' to true "
-                "in config.json and restart me - I'll open a secure tunnel so you can reach "
-                "me from anywhere.")
-    url, qr = engine.remote_pairing()
-    if not url:
-        return ("The remote tunnel is still coming up, sir - it takes a few seconds after "
-                "I start. Do ask again shortly.")
-    if qr and hasattr(engine, "display_visual"):
-        card = (
-            "<svg viewBox='0 0 420 520' xmlns='http://www.w3.org/2000/svg'>"
-            "<rect width='420' height='520' rx='16' fill='#0a0703'/>"
-            "<text x='210' y='44' fill='#ffb24d' font-size='19' text-anchor='middle' "
-            "font-family='Consolas,monospace' letter-spacing='2'>REACH JARVIS REMOTELY</text>"
-            f"<g transform='translate(60,70)'>{qr}</g>"
-            "<text x='210' y='480' fill='#ffce92' font-size='10' text-anchor='middle' "
-            f"font-family='Consolas,monospace'>{url}</text>"
-            "<text x='210' y='500' fill='#8a6a44' font-size='10' text-anchor='middle' "
-            "font-family='Consolas,monospace'>keep this link private</text></svg>")
-        try:
-            engine.display_visual("Remote access", card)
-        except Exception:
-            pass
-    return (f"I've put a QR code on the display, sir. Scan it to reach me from anywhere - "
-            f"it works off your home network. Do keep the link private; it's the key. "
-            f"The address is {url}")
 
 
 def _close_visual(engine=None):
@@ -3070,10 +2993,6 @@ def dispatch(name, inp, engine=None):
             return _display_visual(inp.get("title", ""), inp.get("svg", ""), engine)
         if name == "close_visual":
             return _close_visual(engine)
-        if name == "connect_phone":
-            return _connect_phone(engine)
-        if name == "get_remote_link":
-            return _get_remote_link(engine)
         if name == "add_open_loop":
             return _add_open_loop(inp.get("title", ""), inp.get("next_step", ""),
                                   inp.get("owner", "user"), inp.get("due", ""), engine)

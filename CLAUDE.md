@@ -44,16 +44,13 @@ git repo. Backups of major versions live in `backups/` (`jarvis_pre_*.py`).
 | `jarvis_offline.py` | Deterministic offline brain (math/time/system/files/timers/notes) |
 | `jarvis_local_llm.py` | Local-LLM tier client (OpenAI-compatible: Ollama/llama.cpp/etc.) |
 | `jarvis_web.py` | `read_webpage` fetcher with a hard SSRF guard |
-| `jarvis_remote.py` | Cloudflare tunnel (quick + named) for remote access |
-| `jarvis_phone.py` | LAN phone bridge (scan → Claude vision commentary) |
 | `jarvis_telegram.py` | Telegram front-end (text) |
 | `jarvis_mcp.py` | MCP client — connect external tool servers (namespaced `mcp__<server>__<tool>`) |
 | `jarvis_voiceid.py` / `jarvis_faceid.py` | Speaker-ID / face-auth (local, ONNX) |
 | `google_integration.py` | Google Calendar (read) + Gmail (read + **compose/send**). Scope `gmail.compose`; sends are gated behind a spoken confirmation via `engine.arm_approval` -> `_resolve_pending_approval`. Tools: `create_email_draft`, `send_email`. Adding the send scope means token.json must be re-consented (`connect_google.py`). |
 | `serve_headless.py` | Headless runner (bridges + brain, no mic/HUD) for a Pi/VPS |
-| `serve_remote.py` | Standalone phone-bridge + tunnel |
 | `web/` | HUD pages (`hud_holo.html` — WebGL2 particle `<jarvis-hologram>` — is the active HUD; `hud_aou.html` kept as fallback) + `hologram.js` engine + vendored Three.js (`web/vendor/three/`, offline) |
-| `tests/` | `test_autonomy`, `test_web`, `test_remote`, `test_mcp` (run with `.venv\Scripts\python.exe tests\<name>.py`) |
+| `tests/` | `test_autonomy`, `test_web`, `test_mcp` (run with `.venv\Scripts\python.exe tests\<name>.py`) |
 
 ## Major features (all built and in-tree)
 
@@ -67,7 +64,7 @@ and face auth; **voice engines** `elevenlabs | edge | piper | xtts | chatterbox`
 (xtts/chatterbox = local voice clones; chatterbox runs isolated in
 `.venv-chatterbox`); Google Calendar/Gmail read + **Gmail write (draft + confirmation-gated send)** + **commitment capture**;
 **PC control** (create/print documents); **media control** (system media keys +
-play); front-ends: desktop HUD, LAN phone, **remote** (Cloudflare tunnel),
+play); front-ends: desktop HUD,
 **Telegram**; **MCP client** (fetch + **Playwright browser control** wired: autonomous navigate/scroll/click/type/read-page/screenshot via `@playwright/mcp`, headless). Playwright MCP needs **Node.js 18+** on PATH (`npx`); launched as `cmd /c npx -y @playwright/mcp@latest --headless`. Browsers pre-installed to `%LOCALAPPDATA%\ms-playwright`.
 
 ## Conventions & gotchas
